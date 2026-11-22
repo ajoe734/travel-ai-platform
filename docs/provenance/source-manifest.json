@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "files": [
+    {
+      "source_name": "商家接單助理_系統規劃書_v1.0.docx",
+      "path": "docs/requirements/originals/商家接單助理_系統規劃書_v1.0.docx",
+      "size": 77799,
+      "sha256": "14740cb0907ca9409685b81617109366d566dd49e8d9db9320cecf42bc2d70cd"
+    },
+    {
+      "source_name": "商家接單助理_系統規劃書_v1.0.pdf",
+      "path": "docs/requirements/originals/商家接單助理_系統規劃書_v1.0.pdf",
+      "size": 1061868,
+      "sha256": "49c4662775583748bd024bf4cdad93908781ceba2ec2dad6680f779f53b812f3"
+    },
+    {
+      "source_name": "商家接單助理_v1.1_執行角色增補規格.docx",
+      "path": "docs/requirements/originals/商家接單助理_v1.1_執行角色增補規格.docx",
+      "size": 60345,
+      "sha256": "702abc27ff10a91de1a1186833b4ecd570606c8262b474f74ec0f65f1943e83a"
+    },
+    {
+      "source_name": "商家接單助理_v1.1_執行角色增補規格.pdf",
+      "path": "docs/requirements/originals/商家接單助理_v1.1_執行角色增補規格.pdf",
+      "size": 842280,
+      "sha256": "010d63a00dc4e32f5653fc43c991a24d08c0a9a99c0bba56c5b22f60f1a19f01"
+    },
+    {
+      "source_name": "商家接單助理_開發SA規格書_SA-v1.0.docx",
+      "path": "docs/sa/originals/商家接單助理_開發SA規格書_SA-v1.0.docx",
+      "size": 385140,
+      "sha256": "9e830ded68c32e4c7abdfd00657d9e4785ee7fdf33738d722bf4ec592ae6b0c0"
+    },
+    {
+      "source_name": "商家接單助理_開發SA規格書_SA-v1.0.pdf",
+      "path": "docs/sa/originals/商家接單助理_開發SA規格書_SA-v1.0.pdf",
+      "size": 2008987,
+      "sha256": "ea992995500f29d2e6f576896fbc69ae9dc5bfd8559582b14555086e83ba3833"
+    },
+    {
+      "source_name": "商家接單助理_Wireframe_UXUI設計稿_UX-v1.0.docx",
+      "path": "docs/archive/ux-v1/originals/商家接單助理_Wireframe_UXUI設計稿_UX-v1.0.docx",
+      "size": 8997729,
+      "sha256": "fc6b69ec5871f136f985a1a633e63ae995489316108cb8c65b1feb1ed0fe4dc0"
+    },
+    {
+      "source_name": "商家接單助理_Wireframe_UXUI設計稿_UX-v1.0.pdf",
+      "path": "docs/archive/ux-v1/originals/商家接單助理_Wireframe_UXUI設計稿_UX-v1.0.pdf",
+      "size": 7408127,
+      "sha256": "f8185028ac6a15f0fb48e4989a6d05d4dbf8f50a5c193a7a180ce10c0dd96177"
+    },
+    {
+      "source_name": "商家接單助理_開發SA_含Wireframe與UXUI_合訂版.pdf",
+      "path": "docs/archive/ux-v1/originals/商家接單助理_開發SA_含Wireframe與UXUI_合訂版.pdf",
+      "size": 8290756,
+      "sha256": "a4300cc8a23f443ec02a8ac6a880218f75d01ed7f5bad1926c5503e7f38da952"
+    },
+    {
+      "source_name": "商家接單助理_UX2.0_介面與互動修訂.pdf",
+      "path": "docs/ux/originals/商家接單助理_UX2.0_介面與互動修訂.pdf",
+      "size": 2025627,
+      "sha256": "e32cf0f437620d59eb15bf1e204b69b372918f225fe534115d81c31c082da730"
+    },
+    {
+      "source_name": "商家接單助理_UXUI_可點擊原型_UX-v1.0.html",
+      "path": "prototypes/merchant-assistant/ux-v1/index.html",
+      "size": 104053,
+      "sha256": "6128beeac3f779da139c2246ee705019b4a12905e41e55f60f10eedb5ea7ca89"
+    },
+    {
+      "source_name": "商家接單助理_UX2.0_可操作原型.html",
+      "path": "prototypes/merchant-assistant/ux-v2/index.html",
+      "size": 54395,
+      "sha256": "5b25742e8e6633a9a1550283f5a48e04560ab58fa7de499f78fde01b9a678010"
+    }
+  ]
+}

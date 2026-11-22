@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "word_extractions": [
+    {
+      "source_path": "docs/requirements/originals/商家接單助理_系統規劃書_v1.0.docx",
+      "output_path": "docs/requirements/product-plan-v1.0.md",
+      "body_text_nodes": 853,
+      "unextracted_body_text_nodes": 0,
+      "tables": 19,
+      "figures_in_body": 0,
+      "external_relationship_targets": [
+        "https://developers.line.biz/en/tips/2026/07/23/using-multiple-api-tools/",
+        "https://crescendolab.zendesk.com/hc/en-us/articles/40340350168857-Tutorials-CAAC-Assignment-API",
+        "https://doc.user360.cresclab.com/v2/",
+        "https://kb.rezio.io/zh-tw/article/5paw5ake5lim566h55cg5yig6yq35zwg-1yewkym/",
+        "https://kb.rezio.io/zh-tw/article/5yig6yq35zwg5aac5l2v6lo86lk36kgm56il-1nbyo48/",
+        "https://kb.rezio.io/zh-tw/article/kkday-1u2sfe0/",
+        "https://docs.octo.travel/getting-started/endpoints-and-capabilities",
+        "https://docs.octo.travel/octo-api-core/bookings",
+        "https://developers.ecpay.com.tw/2878/",
+        "https://developers.ecpay.com.tw/9083/",
+        "https://www.postgresql.org/docs/17/ddl-rowsecurity.html",
+        "https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html",
+        "https://developers.line.biz/en/docs/messaging-api/receiving-messages/"
+      ]
+    },
+    {
+      "source_path": "docs/requirements/originals/商家接單助理_v1.1_執行角色增補規格.docx",
+      "output_path": "docs/requirements/execution-role-v1.1.md",
+      "body_text_nodes": 394,
+      "unextracted_body_text_nodes": 0,
+      "tables": 15,
+      "figures_in_body": 0,
+      "external_relationship_targets": [
+        "https://developers.openai.com/api/docs/guides/voice-sip?voice-api=realtime",
+        "https://developers.openai.com/api/docs/guides/voice-server-controls",
+        "https://developers.line.biz/en/docs/messaging-api/receiving-messages/",
+        "https://developers.line.biz/en/tips/2026/07/23/using-multiple-api-tools/",
+        "https://kb.rezio.io/zh-tw/article/kkday-1u2sfe0/",
+        "https://cheatsheetseries.owasp.org/cheatsheets/AI_Agent_Security_Cheat_Sheet.html",
+        "https://kb.rezio.io/zh-tw/article/kkday-kkday-w12u9y/"
+      ]
+    },
+    {
+      "source_path": "docs/sa/originals/商家接單助理_開發SA規格書_SA-v1.0.docx",
+      "output_path": "docs/sa/sa-v1.0.md",
+      "body_text_nodes": 1915,
+      "unextracted_body_text_nodes": 0,
+      "tables": 53,
+      "figures_in_body": 2,
+      "external_relationship_targets": []
+    },
+    {
+      "source_path": "docs/archive/ux-v1/originals/商家接單助理_Wireframe_UXUI設計稿_UX-v1.0.docx",
+      "output_path": "docs/archive/ux-v1/wireframe-ux-v1.0.md",
+      "body_text_nodes": 500,
+      "unextracted_body_text_nodes": 0,
+      "tables": 31,
+      "figures_in_body": 31,
+      "external_relationship_targets": []
+    }
+  ],
+  "pdf_extractions": [
+    {
+      "source_path": "docs/ux/originals/商家接單助理_UX2.0_介面與互動修訂.pdf",
+      "output_path": "docs/ux/ux-v2.0-extracted.txt",
+      "method": "pdftotext -layout"
+    }
+  ]
+}
