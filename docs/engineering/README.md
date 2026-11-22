@@ -17,11 +17,12 @@
 1. [領域模型](domain-model.md)
 2. [狀態機](state-machines.md)
 3. [API 契約](api/openapi.yaml)
-4. [可信入口與客戶確認](api/trusted-ingress-and-confirmation.md)
-5. [事件目錄](events/event-catalog.yaml)
-6. [DB 初始 migration 草案](db/0001_core.sql) 與 [補充 migration](db/0002_connector_and_confirmation.sql)
-7. [驗收案例](testing/acceptance-matrix.md)
-8. [實作分解](implementation-plan.md)
+4. [Availability 與 Booking 流程](api/availability-and-booking-workflow.md)
+5. [可信入口與客戶確認](api/trusted-ingress-and-confirmation.md)
+6. [事件目錄](events/event-catalog.yaml)
+7. [DB 初始 migration 草案](db/0001_core.sql)、[補充 migration](db/0002_connector_and_confirmation.sql)、[單次確認約束](db/0003_confirmation_single_use.sql)
+8. [驗收案例](testing/acceptance-matrix.md)
+9. [實作分解](implementation-plan.md)
 
 ## 不可違反的工程原則
 
