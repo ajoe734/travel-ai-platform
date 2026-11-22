@@ -1,51 +1,55 @@
 # 旅行平台專案 · Travel AI Platform
 
-服務台灣經營者與國內外旅客的商家接單與營運助理。協作商家既有的客服、電話、預約、PMS、POS、CRM、金流與銷售渠道，完成接單、售後、服務改善與渠道執行。
+商家接單與營運助理：承接經營者交代的工作，使用商家既有客服、電話、預約、PMS、POS、CRM、金流與銷售渠道完成接單、售後、服務改善及發布；同一組授權能力可提供給旅客與合作渠道。
 
-**目前階段：既有 SA／UX 文件入庫與 SD 工程交接。** 本專案已收錄原始規格、工程契約及可操作的本機 UX 原型；尚未包含正式後端、已連通的 OTA／PMS／電話／金流，或完成的生產環境。
+**目前階段：原始規格已匯入，SD 對齊文件與 UX 2.1 已交付，可交給 HerdR 接續工程實作。** 本 repository 尚未包含正式後端、已連通的第三方交易系統或生產部署。
 
-## 先從這裡閱讀
+## 先讀這幾份
 
-1. [目前有效決策](docs/project/current-decisions.md)：後續對話對產品、架構與商家操作方式的修訂。
-2. [完整文件索引](docs/README.md)：原始文件、可讀文字、工程附件、原型與歷史版本。
-3. [SA 與下一階段 SD 的差異](docs/sd/sa-v1-gaps.md)：已查核的具體缺口及驗收方向。
-4. [herdr 開發交接](docs/collaboration/herdr-handoff.md)：讀取順序、任務切分、交付與驗證規則。
-5. [AGENTS.md](AGENTS.md)：進入這個 repository 的開發代理共同遵循的規則。
+1. [目前有效基線](docs/project/current-decisions.md)：產品方向、版本關係與本次工作範圍。
+2. [完整文件索引](docs/README.md)：原始 Word／PDF、全文、研究、SD、原型與歷史版。
+3. [SA 與 SD 差異](docs/sd/sa-v1-gaps.md)：跨版本模型與仍待實作的部分。
+4. [HerdR 開發交接](docs/collaboration/herdr-handoff.md)與[開發任務](docs/collaboration/backlog.md)：讀取順序、分工、依賴及驗收。
+5. [AGENTS.md](AGENTS.md)：開發代理共同規則。
 
-## 文件與實作狀態
+## 本次實際交付
 
-| 內容 | 位置 | 正確用途 |
-| --- | --- | --- |
-| 產品規劃 v1.0、執行角色增補 v1.1 | [需求文件](docs/requirements/README.md) | 產品背景、責任與功能需求；保留原始 Word、PDF |
-| 開發 SA v1.0 | [SA 文件](docs/sa/README.md) | 需求、案例、交易規則與參考設計 |
-| OpenAPI、SQL、事件、測試案例 | [工程契約](specs/README.md) | 未改寫的 SA 工程基線；SQL 尚非正式 migration |
-| 最新架構整理與缺口 | [SD 入口](docs/sd/README.md) | 進入工程設計前先處理的差異；不冒充已完成實作 |
-| UX 2.0 原型與設計說明 | [UX 入口](docs/ux/README.md) | 可操作的模擬流程，仍須接上真實工作狀態 |
-| 舊版 UX 1.0 | [歷史檔案](docs/archive/ux-v1/README.md) | 保留設計沿革；不是目前商家介面的開發依據 |
-| 原檔對照與校驗 | [匯入紀錄](docs/provenance/README.md) | 原始包內容對應到 repo 的檔案與 SHA-256 |
-| 本次與歷史驗證 | [驗證紀錄](docs/verification/README.md) | 區分靜態檢查、模擬原型、資料庫與真實整合 |
+| 內容 | 位置 | 狀態 |
+|---|---|---|
+| 產品規劃 v1.0、執行角色 v1.1 | [需求文件](docs/requirements/README.md) | 原始 Word／PDF與全文已匯入 |
+| 開發 SA v1.0 | [SA 文件](docs/sa/README.md) | 原始 Word／PDF與包含表格的完整主文已匯入 |
+| 原始 UX 2.0 與歷史 UX 1.0 | [UX](docs/ux/README.md)、[歸檔](docs/archive/ux-v1/README.md) | 原檔保留，可追溯 |
+| UX 2.1 修訂 | [原型程式](prototypes/merchant-assistant/ux-v2.1/index.html) | 修正渠道狀態、自訂服務描述與容量驗證；仍是本機模擬 |
+| Work／執行／授權／查核／Credit | [SD](docs/sd/README.md)、[ADR](docs/adr/) | 本次新增設計與驗收規則，待實作 |
+| 既有工程與同業研究 | [研究索引](docs/research/README.md) | 4 份主報告文字轉存，歷史交付主張另行核對 |
+| 原檔校驗與抽文紀錄 | [來源對照](docs/provenance/README.md) | 12 個原始檔案，SHA-256 與來源一致 |
+| 原歷史 OpenAPI／SQL／事件附件 | [取得狀態](specs/README.md) | 尚未取得原件，未以新同名檔案替代 |
 
-## 檢視 UX 原型
+SA 主文列出 32 項需求、58 項 API、28 種事件及 64 項驗收；它們的主文與矩陣已保存。獨立 YAML／SQL／JSON 工程附件與歷史 ZIP 的取得狀態，請看[匯入紀錄](docs/provenance/README.md)。主文包含摘要不代表附件已找回或程式已通過整合測試。
 
-原型入口是 [prototypes/merchant-assistant/ux-v2/index.html](prototypes/merchant-assistant/ux-v2/index.html)。下載或 clone 專案後，在專案根目錄執行：
+## 檢視可操作原型
+
+下載或 clone repository 後，在根目錄執行：
 
 ```bash
 python3 -m http.server 8000 --bind 127.0.0.1
 ```
 
-開啟 `http://127.0.0.1:8000/prototypes/merchant-assistant/ux-v2/`。畫面中的接單、退款、發布、成本與成功結果都是原型資料，不會觸發實際交易。GitHub 的 HTML 檔案頁只顯示原始碼。
+開啟 **http://127.0.0.1:8000/prototypes/merchant-assistant/ux-v2.1/**。
 
-## 驗證文件與工程契約
+UX 2.0 原版保留在 `/prototypes/merchant-assistant/ux-v2/`，UX 1.0 在 `/prototypes/merchant-assistant/ux-v1/`。GitHub 的 HTML 檔案頁只顯示原始碼；這些原型沒有呼叫真實訂位、退款或發布服務。操作差異與限制見[原型檢查報告](docs/verification/prototype-audit.md)。
+
+## 驗證文件與原型語法
 
 ```bash
-python3 -m pip install -r requirements-validation.txt
 python3 scripts/validate_repository.py
+node tests/prototype-regression.cjs
 ```
 
-這個命令檢查原始檔案校驗值、文件連結，並在暫存副本執行 SA 契約驗證；不改寫原始驗證報告。實際驗證範圍與未完成項目見[驗證說明](docs/verification/README.md)。
+使用 Python 3 標準函式庫檢查原檔大小／雜湊、文件連結與必要入口。系統有 Node.js 時，另檢查三版原型的 JavaScript 語法；第二個命令重跑 18 項 Node VM 原型流程檢查。本次紀錄與未驗證範圍見[驗證說明](docs/verification/README.md)。GitHub Actions 執行相同檢查。
 
-## 下一個開發起點
+## 下一個工程起點
 
-先完成 `Work`、執行命令、核准版本、連接器能力與結果驗證之間的 SD 契約，再選取一條可驗收的接單流程落地。住宿房晚、活動場次、交通座位與餐飲預約保留各自模型；既有工具的主要資料責任不可由第二份主檔取代。具體缺口見 [SD 差異清單](docs/sd/sa-v1-gaps.md)。
+先依 ENG-01 固定 SA 的 `Case`、`Complaint`、`ExecutionTask` 與新增 `Work` 的關係，再做資料庫、正式授權、mock connector 及第一條可驗收的接單流程。商家正常工作由系統推進，只有缺資訊或需要新決策時介入；完成狀態須由正式結果與證據決定。
 
-本 repo 未假設任何系統投入估值、股權比例、既有渠道權限或正式第三方串接成果。
+原 SA 首輪的語音、售後、洞察／討論、素材取得、兩渠道發布及完整成本回流全部保留在任務清單；第一條接單流程完成不等於全平台完成。

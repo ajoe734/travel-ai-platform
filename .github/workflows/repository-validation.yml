@@ -1,0 +1,21 @@
+name: Repository validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, verified 2026-11-22
+        with:
+          persist-credentials: false
+      - name: Validate original files, links and prototype syntax
+        run: python3 scripts/validate_repository.py
+      - name: Check prototype state transitions in Node VM
+        run: node tests/prototype-regression.cjs

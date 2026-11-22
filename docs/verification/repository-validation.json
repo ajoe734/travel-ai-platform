@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "scope": "source integrity, local links, JavaScript syntax",
+  "status": "passed",
+  "source_files_verified": 12,
+  "source_bytes_verified": 31317106,
+  "markdown_files_checked": 35,
+  "local_links_checked": 157,
+  "javascript_syntax_checks": [
+    {
+      "path": "prototypes/merchant-assistant/ux-v1/index.html",
+      "script_index": 0,
+      "status": "passed"
+    },
+    {
+      "path": "prototypes/merchant-assistant/ux-v2/index.html",
+      "script_index": 0,
+      "status": "passed"
+    },
+    {
+      "path": "prototypes/merchant-assistant/ux-v2.1/index.html",
+      "script_index": 0,
+      "status": "passed"
+    }
+  ],
+  "errors": [],
+  "warnings": [],
+  "not_tested": [
+    "real browser UI and accessibility",
+    "database migrations",
+    "backend integration",
+    "external providers",
+    "production deployment"
+  ]
+}

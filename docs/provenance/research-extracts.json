@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "notes": "Research report main text only. Source citations normalized; historical artifact links shown as historical paths. No activity logs or private account metadata exported.",
+  "files": [
+    {
+      "source_title": "旅行平台專案完整 SA／SD／資料模型／耐久工作流程／API／UX 規劃（重建版）",
+      "source_report_text_sha256": "67fc9dc7da87542ccb2e9c2010998f722777b58337b051fbafa817af8a4d42b5",
+      "path": "docs/research/2026-11-20-rebuilt-sasd.md",
+      "sha256": "1cb43c20925e4c4aab5c9fdf1216d8198ccf94d1e2ef373775cdbca5b2ee6c47"
+    },
+    {
+      "source_title": "旅行平台 SD 工程產物與可操作 UX 原型：第一批實作交付",
+      "source_report_text_sha256": "49b0071d8179b29dd0496517e49aaa6fb89a722ededad82d5f546252eb6f5513",
+      "path": "docs/research/2026-11-21-engineering-batch1.md",
+      "sha256": "a1314774e07f5292def2aed736afd49fab8544c42cac5614596ed152a426c6a6"
+    },
+    {
+      "source_title": "同業實作研究：AI 接單、商家營運 Agent、旅遊分銷與 Agent 系統架構",
+      "source_report_text_sha256": "88fb7f463c2af13bdc1930dbcd741fc35515c20db4b13f034a926c32086b7455",
+      "path": "docs/research/2026-11-21-industry-implementation.md",
+      "sha256": "2f25eb242a639a6922f7b0d28dde56f5daf353d73931bbeabf8b104b643a7c4d"
+    },
+    {
+      "source_title": "旅行平台 GitHub-first 工程交付狀態與立即執行結果",
+      "source_report_text_sha256": "b536f5c6735010acccc931a2ad61189bc2bdd2bce58f57ab7e11ac1ea3dda29b",
+      "path": "docs/research/2026-11-21-github-first.md",
+      "sha256": "bdfd483984b228fe3fb337711ad52d522fd9f5cbfa61bbe75b9eab783ef0bdb7"
+    }
+  ]
+}

@@ -1,0 +1,2 @@
+# 基線文件與原始檔案驗證只使用 Python 3 標準函式庫。
+# HTML 內嵌 JavaScript 的語法檢查在系統有 Node.js 時一併執行。
