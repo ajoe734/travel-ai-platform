@@ -1,0 +1,514 @@
+openapi: 3.1.0
+info:
+  title: Travel AI Platform Core API
+  version: 0.1.0
+  description: >
+    新增工程契約。範圍限於第一個接單預訂垂直切片及共用工作／批准控制面。
+    此文件不是已找回的歷史 OpenAPI，也不表示 API 已實作。
+servers:
+  - url: http://localhost:8080
+    description: Local development only
+security:
+  - bearerAuth: []
+tags:
+  - name: Cases
+  - name: Work
+  - name: Decisions
+  - name: Quotes
+  - name: Bookings
+  - name: Reconciliation
+paths:
+  /v1/cases:
+    post:
+      tags: [Cases]
+      operationId: createCase
+      summary: 建立接單案件
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCase'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Case'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /v1/cases/{caseId}:
+    get:
+      tags: [Cases]
+      operationId: getCase
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+      responses:
+        '200':
+          description: Case
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Case'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/cases/{caseId}/works:
+    post:
+      tags: [Work]
+      operationId: createWorkFromCase
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateWork'
+      responses:
+        '201':
+          description: Work created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Work'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/works:
+    get:
+      tags: [Work]
+      operationId: listWorks
+      parameters:
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        '200':
+          description: Work page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkPage'
+  /v1/works/{workId}:
+    get:
+      tags: [Work]
+      operationId: getWork
+      parameters:
+        - $ref: '#/components/parameters/WorkId'
+      responses:
+        '200':
+          description: Work
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Work'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/works/{workId}/run:
+    post:
+      tags: [Work]
+      operationId: requestWorkRun
+      parameters:
+        - $ref: '#/components/parameters/WorkId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Work scheduled; not a completion claim
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Work'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/works/{workId}/cancel:
+    post:
+      tags: [Work]
+      operationId: requestWorkCancellation
+      parameters:
+        - $ref: '#/components/parameters/WorkId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 3, maxLength: 500 }
+      responses:
+        '202':
+          description: Cancellation accepted for orchestration
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Work'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/decisions/{decisionRequestId}:
+    get:
+      tags: [Decisions]
+      operationId: getDecisionRequest
+      parameters:
+        - name: decisionRequestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Decision request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DecisionRequest'
+  /v1/decisions/{decisionRequestId}/approve:
+    post:
+      tags: [Decisions]
+      operationId: approveDecision
+      parameters:
+        - name: decisionRequestId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [revision, payloadHash, decision]
+              properties:
+                revision: { type: integer, minimum: 1 }
+                payloadHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+                decision: { type: string, enum: [APPROVE, REJECT] }
+                comment: { type: string, maxLength: 1000 }
+      responses:
+        '201':
+          description: Immutable decision record created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Approval'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /v1/approvals/{approvalId}/revoke:
+    post:
+      tags: [Decisions]
+      operationId: revokeApproval
+      parameters:
+        - name: approvalId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [reason]
+              properties:
+                reason: { type: string, minLength: 3, maxLength: 500 }
+      responses:
+        '201':
+          description: Revocation recorded; original approval preserved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Approval'
+  /v1/cases/{caseId}/quotes:
+    post:
+      tags: [Quotes]
+      operationId: createQuote
+      parameters:
+        - $ref: '#/components/parameters/CaseId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateQuote'
+      responses:
+        '201':
+          description: Immutable quote snapshot created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Quote'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /v1/bookings:
+    post:
+      tags: [Bookings]
+      operationId: requestBooking
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [quoteId, customerConfirmationRef]
+              properties:
+                quoteId: { type: string, format: uuid }
+                customerConfirmationRef: { type: string, format: uuid }
+                approvalId: { type: [string, 'null'], format: uuid }
+      responses:
+        '202':
+          description: Booking orchestration accepted; not yet confirmed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+  /v1/bookings/{bookingId}:
+    get:
+      tags: [Bookings]
+      operationId: getBooking
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Booking and independent payment state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/bookings/{bookingId}/reconcile:
+    post:
+      tags: [Reconciliation]
+      operationId: reconcileBooking
+      parameters:
+        - name: bookingId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '202':
+          description: Reconciliation scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+        '409':
+          $ref: '#/components/responses/Conflict'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+    CaseId:
+      name: caseId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    WorkId:
+      name: workId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    NotFound:
+      description: Resource not found in caller's authorized tenant scope
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: State conflict, stale revision, idempotency conflict or duplicate side effect
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: Invalid input or policy rejection before side effect
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    CreateCase:
+      type: object
+      required: [source, customer, requestText]
+      properties:
+        source:
+          type: object
+          required: [channel]
+          properties:
+            channel: { type: string, maxLength: 80 }
+            externalConversationId: { type: [string, 'null'], maxLength: 200 }
+        customer:
+          type: object
+          required: [displayName]
+          properties:
+            displayName: { type: string, minLength: 1, maxLength: 200 }
+            contactRef: { type: [string, 'null'], format: uuid }
+        requestText: { type: string, minLength: 1, maxLength: 10000 }
+        locale: { type: string, default: zh-TW }
+        serviceTimezone: { type: [string, 'null'], description: IANA timezone }
+    Case:
+      type: object
+      required: [id, tenantId, status, source, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        tenantId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [OPEN, QUALIFYING, READY, IN_PROGRESS, WAITING_CUSTOMER, WAITING_MERCHANT, RESOLVED, CLOSED, SPAM, DUPLICATE]
+        source: { type: object, additionalProperties: true }
+        createdAt: { type: string, format: date-time }
+    CreateWork:
+      type: object
+      required: [workType, title, goal, acceptanceCriteria]
+      properties:
+        workType:
+          type: string
+          enum: [BOOKING, CHANGE, CANCELLATION, REFUND, COMPLAINT_RESOLUTION, SERVICE_PUBLICATION, FOLLOW_UP, INTERNAL]
+        title: { type: string, minLength: 1, maxLength: 200 }
+        goal: { type: string, minLength: 1, maxLength: 2000 }
+        acceptanceCriteria:
+          type: array
+          minItems: 1
+          items: { type: string, minLength: 1, maxLength: 500 }
+        dueAt: { type: [string, 'null'], format: date-time }
+        priority: { type: string, enum: [LOW, NORMAL, HIGH, URGENT], default: NORMAL }
+    Work:
+      type: object
+      required: [id, tenantId, workType, status, revision, acceptanceCriteria, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        tenantId: { type: string, format: uuid }
+        caseId: { type: [string, 'null'], format: uuid }
+        workType: { type: string }
+        status:
+          type: string
+          enum: [DRAFT, READY, RUNNING, WAITING_DECISION, WAITING_EXTERNAL, RECONCILIATION_REQUIRED, BLOCKED, SUCCEEDED, FAILED, CANCELLED, EXPIRED]
+        revision: { type: integer, minimum: 1 }
+        acceptanceCriteria: { type: array, items: { type: string } }
+        blockedReason: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    WorkPage:
+      type: object
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/Work' } }
+        nextCursor: { type: [string, 'null'] }
+    DecisionRequest:
+      type: object
+      required: [id, tenantId, status, revision, payloadHash, decisionType]
+      properties:
+        id: { type: string, format: uuid }
+        tenantId: { type: string, format: uuid }
+        status: { type: string, enum: [OPEN, APPROVED, REJECTED, EXPIRED, CANCELLED, SUPERSEDED] }
+        revision: { type: integer, minimum: 1 }
+        payloadHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        decisionType: { type: string }
+        summary: { type: string }
+        expiresAt: { type: [string, 'null'], format: date-time }
+    Approval:
+      type: object
+      required: [id, tenantId, decisionRequestId, revision, payloadHash, status, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        tenantId: { type: string, format: uuid }
+        decisionRequestId: { type: string, format: uuid }
+        revision: { type: integer }
+        payloadHash: { type: string, pattern: '^[a-f0-9]{64}$' }
+        status: { type: string, enum: [ACTIVE, REVOKED, EXPIRED, CONSUMED] }
+        createdAt: { type: string, format: date-time }
+    CreateQuote:
+      type: object
+      required: [serviceVersionId, serviceDateTime, timezone, party, requestedResources]
+      properties:
+        serviceVersionId: { type: string, format: uuid }
+        serviceDateTime: { type: string, format: date-time }
+        timezone: { type: string, description: IANA timezone }
+        party:
+          type: object
+          required: [adults]
+          properties:
+            adults: { type: integer, minimum: 1 }
+            children: { type: integer, minimum: 0, default: 0 }
+            infants: { type: integer, minimum: 0, default: 0 }
+        requestedResources:
+          type: array
+          minItems: 1
+          items: { type: object, additionalProperties: true }
+        options: { type: object, additionalProperties: true }
+    Quote:
+      type: object
+      required: [id, tenantId, amountMinor, currency, expiresAt, serviceVersionId, revision]
+      properties:
+        id: { type: string, format: uuid }
+        tenantId: { type: string, format: uuid }
+        serviceVersionId: { type: string, format: uuid }
+        revision: { type: integer }
+        amountMinor: { type: integer, minimum: 0 }
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+        expiresAt: { type: string, format: date-time }
+        termsSnapshot: { type: object, additionalProperties: true }
+    Booking:
+      type: object
+      required: [id, tenantId, status, paymentStatus, quoteId, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        tenantId: { type: string, format: uuid }
+        quoteId: { type: string, format: uuid }
+        status:
+          type: string
+          enum: [DRAFT, QUOTED, HOLD_PENDING, HELD, CONFIRM_PENDING, CONFIRMED, REJECTED, CANCEL_PENDING, CANCELLED, CHANGE_PENDING, UNKNOWN, EXPIRED, MANUAL_REVIEW]
+        paymentStatus:
+          type: string
+          enum: [NOT_REQUIRED, NOT_STARTED, REQUIRES_ACTION, PROCESSING, AUTHORIZED, CAPTURED, PARTIALLY_REFUNDED, REFUNDED, FAILED, UNKNOWN]
+        providerReference: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+    Error:
+      type: object
+      required: [code, message, correlationId]
+      properties:
+        code: { type: string }
+        message: { type: string }
+        correlationId: { type: string, format: uuid }
+        details: { type: object, additionalProperties: true }

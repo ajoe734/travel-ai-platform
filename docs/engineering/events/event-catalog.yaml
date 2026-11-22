@@ -1,0 +1,172 @@
+catalogVersion: 0.1.0
+envelope: cloudevents-1.0-compatible
+description: >
+  本目錄為新增工程契約，不是已找回的歷史事件 JSON/YAML 附件。
+  所有事件只在 DB transaction commit 後經 transactional outbox 發送。
+requiredEnvelope:
+  specversion: "1.0"
+  id: "UUID"
+  source: "/tenants/{tenantId}/{service}"
+  type: "travel.{aggregate}.{event}.v1"
+  subject: "{aggregateType}/{aggregateId}"
+  time: "RFC3339 UTC"
+  datacontenttype: "application/json"
+  tenantid: "UUID"
+  correlationid: "UUID"
+  causationid: "UUID|null"
+  actorid: "UUID|null"
+  aggregateversion: "integer"
+delivery:
+  guarantee: at-least-once
+  consumerRule: "以 source + id 去重；同一 aggregate 的版本不可倒退；handler 必須可重入。"
+  ordering: "只保證同一 aggregate 的 aggregateversion 單調遞增；跨 aggregate 不保證順序。"
+  retention: "依事件分類及資料保留政策設定；PII 不得直接放入 payload。"
+events:
+  - type: travel.case.created.v1
+    aggregate: case
+    producer: CaseService
+    payload:
+      required: [caseId, status, sourceChannel]
+      properties:
+        caseId: { type: uuid }
+        status: { const: OPEN }
+        sourceChannel: { type: string }
+  - type: travel.case.status_changed.v1
+    aggregate: case
+    producer: CaseDomainService
+    payload:
+      required: [caseId, from, to, reasonCode]
+      properties:
+        caseId: { type: uuid }
+        from: { type: string }
+        to: { type: string }
+        reasonCode: { type: string }
+  - type: travel.work.created.v1
+    aggregate: work
+    producer: WorkService
+    payload:
+      required: [workId, caseId, workType, revision]
+      properties:
+        workId: { type: uuid }
+        caseId: { type: [uuid, "null"] }
+        workType: { type: string }
+        revision: { type: integer }
+  - type: travel.work.status_changed.v1
+    aggregate: work
+    producer: WorkDomainService
+    payload:
+      required: [workId, from, to, reasonCode, revision]
+      properties:
+        workId: { type: uuid }
+        from: { type: string }
+        to: { type: string }
+        reasonCode: { type: string }
+        revision: { type: integer }
+  - type: travel.execution_task.queued.v1
+    aggregate: execution_task
+    producer: Orchestrator
+    payload:
+      required: [taskId, workId, taskType, operationKey, requestHash]
+      properties:
+        taskId: { type: uuid }
+        workId: { type: uuid }
+        taskType: { type: string }
+        operationKey: { type: string }
+        requestHash: { type: string }
+  - type: travel.execution_attempt.finished.v1
+    aggregate: execution_task
+    producer: ConnectorRuntime
+    payload:
+      required: [taskId, attemptId, attemptNo, outcome]
+      properties:
+        taskId: { type: uuid }
+        attemptId: { type: uuid }
+        attemptNo: { type: integer }
+        outcome: { enum: [SUCCEEDED, FAILED, PENDING, UNKNOWN] }
+        providerReference: { type: [string, "null"] }
+        safeErrorCode: { type: [string, "null"] }
+  - type: travel.decision.requested.v1
+    aggregate: decision_request
+    producer: PolicyEngine
+    payload:
+      required: [decisionRequestId, subjectType, subjectId, revision, payloadHash, decisionType]
+      properties:
+        decisionRequestId: { type: uuid }
+        subjectType: { type: string }
+        subjectId: { type: uuid }
+        revision: { type: integer }
+        payloadHash: { type: string }
+        decisionType: { type: string }
+  - type: travel.decision.approved.v1
+    aggregate: decision_request
+    producer: ApprovalService
+    payload:
+      required: [decisionRequestId, approvalId, revision, payloadHash, approverActorId]
+      properties:
+        decisionRequestId: { type: uuid }
+        approvalId: { type: uuid }
+        revision: { type: integer }
+        payloadHash: { type: string }
+        approverActorId: { type: uuid }
+  - type: travel.approval.revoked.v1
+    aggregate: approval
+    producer: ApprovalService
+    payload:
+      required: [approvalId, reasonCode, revokedByActorId]
+      properties:
+        approvalId: { type: uuid }
+        reasonCode: { type: string }
+        revokedByActorId: { type: uuid }
+  - type: travel.quote.created.v1
+    aggregate: quote
+    producer: QuoteService
+    payload:
+      required: [quoteId, caseId, amountMinor, currency, expiresAt, revision]
+      properties:
+        quoteId: { type: uuid }
+        caseId: { type: uuid }
+        amountMinor: { type: integer }
+        currency: { type: string }
+        expiresAt: { type: datetime }
+        revision: { type: integer }
+  - type: travel.booking.requested.v1
+    aggregate: booking
+    producer: BookingOrchestrator
+    payload:
+      required: [bookingId, quoteId, operationKey, requestHash]
+      properties:
+        bookingId: { type: uuid }
+        quoteId: { type: uuid }
+        operationKey: { type: string }
+        requestHash: { type: string }
+  - type: travel.booking.status_changed.v1
+    aggregate: booking
+    producer: BookingReconciliation
+    payload:
+      required: [bookingId, from, to, provider, evidenceId]
+      properties:
+        bookingId: { type: uuid }
+        from: { type: string }
+        to: { type: string }
+        provider: { type: string }
+        evidenceId: { type: uuid }
+  - type: travel.evidence.recorded.v1
+    aggregate: evidence
+    producer: EvidenceService
+    payload:
+      required: [evidenceId, subjectType, subjectId, evidenceType, digest]
+      properties:
+        evidenceId: { type: uuid }
+        subjectType: { type: string }
+        subjectId: { type: uuid }
+        evidenceType: { type: string }
+        digest: { type: string }
+  - type: travel.notification.delivery_changed.v1
+    aggregate: notification
+    producer: NotificationService
+    payload:
+      required: [notificationId, status, channel]
+      properties:
+        notificationId: { type: uuid }
+        status: { enum: [QUEUED, SENT, DELIVERED, FAILED, UNKNOWN] }
+        channel: { type: string }

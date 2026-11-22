@@ -1,46 +1,59 @@
 # 可交付的開發任務
 
-2026-11-22 建立。以下是工程任務，不是已完成清單。工作目錄可於對應任務建立；本次不以空檔案偽裝實作。
+更新：2026-11-22。以下是工程任務，不是已完成清單。新增工程契約 v0.1.0 已提供可評審的領域模型、狀態機、OpenAPI、事件目錄、SQL 草案及驗收矩陣；尚未代表程式已實作。
 
-原 SA 的首輪範圍完整保留：文字與語音接單、售後／客訴、數據洞察與商家討論、素材取得、服務新版核准、兩個授權入口發布、訂單與成本回流。ENG-01～09 是先行工程依賴，ENG-10～12 同屬首輪必要工作；第一條接單流程完成或 ENG-09 完成，不等於整個首輪驗收通過。完整需求仍以 SA 的 FR-01～32 與驗收矩陣為準。
+原 SA 首輪範圍完整保留：文字與語音接單、售後／客訴、數據洞察與商家討論、素材取得、服務新版核准、兩個授權入口發布、訂單與成本回流。ENG-01～09 是先行工程依賴，ENG-10～12 同屬首輪必要工作；第一條接單流程完成或 ENG-09 完成，不等於整個首輪驗收通過。完整需求仍以 SA 的 FR-01～32 與驗收矩陣為準。
+
+## 工程契約入口
+
+HerdR 必須先讀 docs/engineering/README.md，依序讀 domain model、state machines、OpenAPI、event catalog、DB migration draft、acceptance matrix 與 implementation plan。契約若有衝突或實作發現不合理，先開 ADR 並更新所有受影響規格，不可自行發明第二套狀態。
 
 ## ENG-01：固定跨版本領域與契約
 
-**依賴：** 無。先讀原始 SA、本次 SD 與 ADR。
+**依賴：** 無。先讀原始 SA、本次 SD、ADR 與工程契約。
 
-**產出：** Case、Complaint、Work、ExecutionTask、ExecutionAttempt、DecisionRequest、Approval、Order 的關聯；共用 ID、金額／幣別、版本、狀態、error envelope；新的機器可讀 schema 與版本轉換說明。每個契約註明新增版本及來源，不取代仍未找回的原附件。
+**子任務：**
+- ENG-01A：技術決策與 repository bootstrap（framework、runtime、migration、worker、test stack、CI）。
+- ENG-01B：domain types／runtime schemas、狀態機純函式、error code registry、SA traceability。
+- ENG-01C：OpenAPI lint、event envelope/schema、contract tests。
 
-**驗收：** 同一案件可有多個 Work；同一 Work 可有多個執行操作；重試只增加 Attempt；退款完成不會使 Complaint 自動結案。為所有既有狀態提供對照或明確不相容理由；SA 需求編號可追溯。
+**產出：** Case、Complaint、Work、ExecutionTask、ExecutionAttempt、DecisionRequest、Approval、Quote、Booking、Evidence 的關聯；共用 ID、金額／幣別、版本、狀態、error envelope；機器可讀 schema 與版本轉換說明。每個契約註明新增版本及來源，不取代仍未找回的原附件。
+
+**驗收：** 同一案件可有多個 Work；同一 Work 可有多個執行操作；重試只增加 Attempt；退款完成不會使 Complaint 自動結案。所有狀態轉移有正反測試；SA 需求編號可追溯；OpenAPI lint 0 error。
 
 ## ENG-02：可執行資料庫基線與多租戶約束
 
 **依賴：** ENG-01。
 
-**產出：** 新版 migration、rollback／forward-fix 說明、repository 層、transactional outbox／inbox、測試種子與非正式資料標記。保存報價／成交快照、批准內容、操作 key、外部參照及證據。
+**子任務：**
+- ENG-02A：migration runner、schema migration、repository、transaction boundary、test fixtures。
+- ENG-02B：每張 tenant-owned table 的 RLS、非 owner／非 BYPASSRLS app role、tenant context、append-only audit、inbox/outbox。
 
-**驗收：** 空庫升級、重建與規定的回復程序實跑；tenant A 不可讀寫 tenant B；不能建立跨 tenant 父子參照；原子退款額度不因併發超退；operation key 相同但 payload 不同會拒絕；批准紀錄不可改寫。
+**產出：** 將 docs/engineering/db/0001_core.sql 評審後轉正式 migration；補齊 connector account、customer confirmation、必要 FK／索引；forward-fix 說明、測試種子與非正式資料標記。
+
+**驗收：** 空庫升級與 forward-fix 實跑；tenant A 不可讀寫 tenant B；不能建立跨 tenant 父子參照；operation key 相同但 payload 不同會拒絕；批准／稽核紀錄不可改寫；RLS 測試使用非 owner app role。
 
 ## ENG-03：授權、決策版本與撤回
 
 **依賴：** ENG-01；持久化部分依 ENG-02。
 
-**產出：** 授權判定服務、DecisionRequest API、版本與 payload hash、批准／拒絕／過期／撤回紀錄、執行前再檢查及競態處理。
+**產出：** 授權判定服務、DecisionRequest API、revision 與 payload hash、批准／拒絕／過期／撤回紀錄、執行前再檢查及競態處理。
 
-**驗收：** 已有政策覆蓋時不產生多餘人工作業；新承諾才需批准；舊 ETag、變更金額、錯 tenant、授權撤回與重複批准都有明確結果。不得以模型文字或前端旗標授權交易。
+**驗收：** 已有政策覆蓋時不產生多餘人工作業；新承諾才需批准；舊 revision、變更金額、錯 tenant、授權撤回與重複批准都有明確結果。不得以模型文字或前端旗標授權交易。
 
 ## ENG-04：供應商中立連接器與三種 mock
 
 **依賴：** ENG-01。
 
-**產出：** typed SDK、能力描述、帳號／授權／營運狀態、idempotency 與 reconciliation 契約；場次同步預訂、房晚 PMS、非同步渠道發布三個 mock；固定測試資料及故障模式。
+**產出：** typed SDK、capability registry、帳號／授權／營運狀態、idempotency 與 reconciliation 契約；活動場次同步預訂、房晚 PMS、非同步渠道發布三個 mock；固定測試資料及故障模式。
 
-**驗收：** PMS 未提供發布能力時在呼叫前拒絕；`PENDING` 與 `UNKNOWN` 可區分；查核回 `SUCCEEDED` 或 `FAILED` 均有收尾；同 key 不重複建立外部資源；外部成功後本地逾時仍可查回同一結果；沒有任何真實服務 API 權限的預設。
+**驗收：** 不支援能力時在呼叫前拒絕；PENDING 與 UNKNOWN 可區分；查核回成功或失敗均有收尾；同 key 不重複建立外部資源；外部成功後本地逾時可查回同一結果；預設沒有真實服務 API 權限。
 
 ## ENG-05：第一條接單耐久流程
 
 **依賴：** ENG-02、03、04。
 
-**產出：** API handler、流程 Worker／Activity、定時查核、事件處理與完成證據。從既有接單案件建立 Work，查詢可用供應、形成 quote、取得必要同意，再向 mock 建立預訂並驗證。
+**產出：** API handler、workflow／worker、定時查核、事件處理與完成證據。從既有接單案件建立 Work，查詢可售、形成 quote、取得可信客戶確認與必要商家批准，再向 mock 建立預訂並驗證。
 
 **驗收：** 正常完成；Worker 重啟後可延續；重複／亂序 webhook 不倒退狀態；取消與執行競態有明確結果；未知結果不盲目重送；超過查核期限產生待處理工作；未取得外部證據不得顯示完成；通知失敗與預訂失敗分開。
 
@@ -56,7 +69,7 @@
 
 **依賴：** ENG-02、03、04、05。
 
-**產出：** 原付款退款流程、Credit ledger／發放／使用／到期契約、補償 Work 與 Complaint 的關聯、結果通知及失敗處理。正式額度與有效期間由商家政策設定。
+**產出：** 原付款路徑退款流程、Credit ledger／發放／使用／到期契約、補償 Work 與 Complaint 的關聯、結果通知及失敗處理。正式額度與有效期間由商家政策設定。
 
 **驗收：** 重複發放不增加餘額；退款不得超過可退額；已使用 Credit 的撤回有明確處理；付款路徑／幣別一致；執行成功與通知、客訴結案各自記錄；對外金額操作全在 mock 或測試環境。
 
