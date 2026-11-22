@@ -1,68 +1,82 @@
 # HerdR 開發交接
 
-更新：2026-11-22。目標是讓開發代理依同一份可追溯基線工作，不再從零產生另一套同名規格。
+更新：2026-11-22。目標是讓 HerdR 知道每個模組的輸入、輸出、狀態、資料責任、失敗處理與驗收方式。
 
 ## 開始工作
 
-在已具備 repository 存取權限的開發環境執行：
-
-```bash
+~~~
 git clone https://github.com/ajoe734/travel-ai-platform.git
 cd travel-ai-platform
 python3 scripts/validate_repository.py
-```
+node tests/prototype-regression.cjs
+~~~
 
-此階段是文件與靜態原型，不需要金鑰、資料庫或支付帳號。檢查腳本使用 Python 標準函式庫；有 Node.js 時會加做原型 JavaScript 語法檢查。後端建立後，再由對應任務引入依賴與鎖定檔。
+先不要索取真實供應商、金流或商家帳號。第一階段只需本機開發環境、PostgreSQL 測試資料庫與 mock connector；任何真實外部副作用均不在目前授權範圍。
 
 ## 必讀順序
 
-1. [AGENTS.md](../../AGENTS.md)：開發約束。
-2. [目前決策](../project/current-decisions.md)：有效基線及實作界線。
-3. [來源與原檔](../provenance/README.md)：已取得／未取得的文件。
-4. [SA 完整主文](../sa/sa-v1.0.md)：尤其需求、Case／Complaint、執行、退款與驗收。
-5. [SD 差異清單](../sd/sa-v1-gaps.md)與 [SD 索引](../sd/README.md)：新增 Work 設計及跨版本修正。
-6. [開發任務](backlog.md)：先後依賴及完成條件。
-7. [原型檢查](../verification/prototype-audit.md)：已有互動及仍待實作部分。
+1. [AGENTS.md](../../AGENTS.md)
+2. [目前決策](../project/current-decisions.md)
+3. [來源與原檔](../provenance/README.md)
+4. [SA 完整主文](../sa/sa-v1.0.md) 與 [執行角色 v1.1](../requirements/execution-role-v1.1.md)
+5. [SD 索引](../sd/README.md)、[SA／SD 差異](../sd/sa-v1-gaps.md) 與 [ADR](../adr/)
+6. [工程契約](../engineering/README.md)：domain model、state machines、OpenAPI、events、SQL、acceptance matrix、implementation plan
+7. [開發任務](backlog.md)
+8. [原型檢查](../verification/prototype-audit.md)
 
-## 可直接交給開發代理的任務敘述
+## 可直接交給 HerdR 的主指令
 
-> 請在 travel-ai-platform 專案接續工作。先完整閱讀 AGENTS.md、docs/project/current-decisions.md、docs/provenance/README.md、docs/sd/README.md 與 docs/collaboration/backlog.md。從 ENG-01 開始，沿用 SA 的 Case、Complaint、ExecutionTask 語意，與新增 Work 對齊；不要把未取得的舊工程附件當成已存在，也不要重建同名檔案後宣稱是原版。每項工作建立分支，交付可執行內容、對應契約、必要測試與實際執行結果。先使用 mock adapter，對外帳號、供應商寫入或支付不在這項任務的授權範圍。完成第一個驗收流程後提交 PR，說明變更、測試、未實作事項與下一項依賴。
+> 你是 travel-ai-platform 的主要工程代理。先完整讀取必讀文件，尤其 AGENTS.md 與 docs/engineering/ 全目錄。不可自行重新設計一套與 SA／SD 不同的 Case、Complaint、Work、ExecutionTask、Approval、Booking 或狀態機。
+>
+> 從 ENG-01A 開始，一個 task 一個 branch／PR。第一個 PR 完成技術決策、repository bootstrap、domain runtime schemas、狀態機純函式、OpenAPI／event contract validation。接著完成 PostgreSQL migration、tenant RLS、inbox/outbox，再做授權、mock connectors 與 durable workflow。
+>
+> 第一條端到端流程必須使用 mock：建立 Case、建立 Work、查詢可售、產生不可變 Quote、取得可信客戶確認、依政策取得商家批准、建立 mock Booking、處理 PENDING／UNKNOWN、reconciliation、保存 Evidence，最後由 completion evaluator 判定 Work 是否成功。
+>
+> 不得把 HTTP 200、模型文字、通知送達或 mock 未經查核的回應當成預訂成功。UNKNOWN 先查核，不可盲目重送；相同 Idempotency-Key + 不同 payload 必須拒絕。所有租戶關聯由 DB constraint 與 RLS 保護。
+>
+> 每個 PR 列出 SA FR／W 對照、改動檔案、migration、API/event 變更、實際執行測試、mock/sandbox/production 層級、未完成依賴及下一個任務。不要只交空 interface、route stub、TODO 或文件摘要。
 
-## 工作分配
+## 第一個里程碑的使用者流程
 
-| 分工 | 可獨立處理 | 依賴 |
+1. 旅客從已授權入口提出需求；平台建立 Conversation／Message，建立 Case。
+2. 系統辨識必要資訊缺口；只在缺少日期、人數、服務類型等必要條件時向旅客追問。
+3. 資訊足夠後建立 Work，列出目標與可驗收條件。
+4. 系統依服務版本與 connector capability 查詢可售；沒有 capability 或帳號權限時先 BLOCKED。
+5. 建立 Quote 快照：服務版本、日期、時區、人數、資源、價格、幣別、取消條款、供應商、有效期限。
+6. 旅客確認必須來自可信入口事件／確認 token，且綁定 quote revision + payload hash；模型說「旅客同意」不算。
+7. 授權政策判定是否需要商家批准；需要時建立 DecisionRequest，批准綁定 revision/hash/policy version。
+8. 執行前重新檢查 tenant、actor、connector account、capability、quote expiry、customer confirmation、approval scope 與 revoke 狀態。
+9. 以穩定 operation key 呼叫 mock provider。PENDING 等待；UNKNOWN 進 reconciliation；不得直接重送。
+10. 查核外部結果，保存 provider reference 與 Evidence；由 completion evaluator 檢查所有條件後才能 Work=SUCCEEDED。
+11. 通知另行執行；通知失敗不得把已確認的預訂改回失敗。
+
+## 任務分工
+
+| 分工 | 先做 | 依賴 |
 |---|---|---|
-| 領域與資料模型 | ENG-01，接續 ENG-02 | 先讀原始 SA 與本次 ADR |
-| 授權與流程 | ENG-03，接續 ENG-05 | 領域 ID、狀態、執行邊界固定 |
-| 連接器 | ENG-04 | 共用結果／冪等／證據契約固定 |
-| 商家 UX | ENG-06 | 工作與決策 API 契約固定；可先讀原型，不得自訂另一套狀態 |
-| 業務擴展 | ENG-07、ENG-08 | 接單流程及共用執行能力通過驗收 |
-| 整合與運維 | ENG-09 | 前述流程可在本地啟動 |
-| 語音與多媒體 | ENG-10 | 共用案件與交易流程成立 |
-| 洞察、討論與素材 | ENG-11 | 可追溯數據、版本與渠道發布能力 |
-| 計費與渠道結算 | ENG-12 | 交易、成本、退款與渠道歸因可核對 |
+| Domain／API 契約 | ENG-01A～01C | 無 |
+| DB／資料安全 | ENG-02A～02B | ENG-01 |
+| 授權／批准 | ENG-03A～03B | ENG-01；持久化依 ENG-02 |
+| Connector／mock | ENG-04A～04B | ENG-01 |
+| Orchestration／Booking | ENG-05A～05B | ENG-02、03、04 |
+| 商家工作台 | ENG-06A | ENG-01；整合依 ENG-05 |
+| 退款／Credit／客訴 | ENG-07 | ENG-02～05 |
+| 服務版本／發布 | ENG-08 | ENG-03～05 |
+| 部署與營運 | ENG-09 | ENG-05、06 |
+| 語音與多媒體 | ENG-10 | ENG-01、03、05 |
+| 洞察／討論／素材權利 | ENG-11 | ENG-02、03、05、08 |
+| 計費／歸因／結算／成本 | ENG-12 | ENG-02、05、07、08、10 |
 
-同時開發時，每個代理使用自己的 branch／worktree。共用契約由一個變更負責，其餘代理依該 commit 接續；不要在分支各自新增不相容的 Work／Approval／Result 型別。
+## 每份 PR 的必要內容
 
-## 每份 PR 的交付內容
+- 解決的營運問題與 SA FR／W 對照。
+- 變更的 entity、API、event、state transition、UI、migration。
+- 成功與拒絕路徑測試；適用時包括 timeout、duplicate、out-of-order、tenant isolation、approval stale/revoke。
+- 真正執行的命令與通過／失敗結果。
+- 測試層級：unit、contract、integration、workflow、mock E2E、sandbox、production。
+- migration 相容性、forward-fix、備份復原與風險。
+- 未完成依賴、下一個可領取 task。
 
-- 說明解決哪個營運問題、相關 SA 需求／SD 條文與 backlog 編號。
-- 列出資料模型、API、事件、狀態及畫面的變更，必要時更新 ADR。
-- 提供真正執行的命令與結果；未連真實供應商就寫 mock，未啟動資料庫就不寫 migration 通過。
-- 驗證成功路徑及本項風險，例如重複送出、舊批准、跨租戶資源、外部成功但本地逾時。
-- 說明 migration／相容性與回復方式；不要直接破壞既有 SA 的識別字與欄位。
-- 原檔校驗及文件索引檢查維持通過。
+## 明確未完成
 
-## 原型開啟
-
-```bash
-python3 -m http.server 8000 --bind 127.0.0.1
-```
-
-在瀏覽器開啟 `http://127.0.0.1:8000/prototypes/merchant-assistant/ux-v2.1/`。UX 2.0 原版保留在 `ux-v2/`；UX 1.0 保留在 `ux-v1/`。所有資料與執行均為原型模擬，沒有連接正式交易系統。
-
-## 第一個工程里程碑
-
-完成 ENG-01 至 ENG-05 後，應可在本地啟動一條「建立接單案件與工作 → 取得資料 → 形成正式報價 → 判定授權 → mock 預訂 → 外部結果查核 → 保存完成證據」流程。還須通過逾時後不重複訂位、跨租戶拒絕、授權過期與重複 webhook 的反例。這是第一個可運行里程碑，不以文件數量或模型回答完整度判定完成。
-
-原 SA 首輪完整經營循環仍包括語音接單、數據洞察、商家討論、素材權利、兩入口發布及成本／結算回流；ENG-10～12 不能被省略，首個里程碑不代表全部 SA 驗收結束。
+目前尚無正式 API server、DB migration 執行結果、RLS policy、worker、connector、真實供應商／金流介接或 production deployment。歷史獨立 OpenAPI／SQL／event schema 附件仍未取得；工程契約 v0.1.0 是新增設計。
