@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
+tools_root=${TRAVEL_DEV_TOOLS:-"${XDG_DATA_HOME:-$HOME/.local/share}/travel-ai-dev"}
+bundle="$tools_root/node24.22.3-hc0.1.22-codex0.171.0"
+export PATH="$bundle/bin:$PATH"
+hc="$bundle/bin/herdr-core"
+agent=travel-eng-01a
+
+install_tools() (
+    if [[ $(uname -sm) != 'Linux x86_64' ]]; then
+        echo '此工具組適用於 x86_64 Linux 開發機。' >&2
+        exit 1
+    fi
+    mkdir -p "$tools_root"
+    exec 9>"$tools_root/install.lock"
+    flock 9
+    if [[ -x "$hc" && -x "$bundle/bin/codex" && -x "$bundle/bin/node" ]]; then
+        return
+    fi
+
+    stage=$(mktemp -d "$tools_root/.install-XXXXXXXX")
+    trap 'rm -rf -- "$stage"' EXIT
+    mkdir "$stage/bundle"
+    curl --fail --silent --show-error --location --retry 3 \
+        https://nodejs.org/dist/v24.22.3/node-v24.22.3-linux-x64.tar.xz -o "$stage/node.tar.xz"
+    curl --fail --silent --show-error --location --retry 3 \
+        https://releases.herdr.dev/core/0.1.22/herdr-core-linux-x86_64.tar.gz -o "$stage/core.tar.gz"
+    (cd "$stage" && sha256sum --check <<'CHECKSUMS'
+4f2b175a6d53a5c617a80dba2676238a0688cef28c6da4eba35c7d844e66fcfb  node.tar.xz
+3054ec3992ce80c5715d721caa9dcefa6056721d15dc113f4750afce763ba5df  core.tar.gz
+CHECKSUMS
+    )
+    tar -xJf "$stage/node.tar.xz" --strip-components=1 -C "$stage/bundle"
+    tar -xzf "$stage/core.tar.gz" -C "$stage/bundle/bin" herdr-core
+    ln -s herdr-core "$stage/bundle/bin/hc"
+    export PATH="$stage/bundle/bin:$PATH"
+    npm install --prefix "$stage/bundle" --global --no-audit --no-fund @openai/codex@0.171.0
+    "$stage/bundle/bin/node" --version
+    "$stage/bundle/bin/herdr-core" --version
+    "$stage/bundle/bin/codex" --version
+    mv -T "$stage/bundle" "$bundle"
+)
+
+case "${1:-}" in
+    install) install_tools; exit ;;
+    check|login|start|status|attach) ;;
+    *) echo "Usage: $0 {install|check|login|start|status|attach}" >&2; exit 2 ;;
+esac
+if [[ ! -x "$hc" ]]; then
+    echo "請先執行 $0 install" >&2
+    exit 1
+fi
+case "$1" in
+    check)
+        "$hc" server start
+        "$hc" run --cwd "$repo" -- env "PATH=$PATH" python3 scripts/validate_repository.py
+        "$hc" run --cwd "$repo" -- "$bundle/bin/node" tests/prototype-regression.cjs
+        ;;
+    login) exec "$bundle/bin/codex" login --device-auth ;;
+    start)
+        if [[ $(git -C "$repo" branch --show-current) != feat/eng-01a-bootstrap ]]; then
+            echo '請在 feat/eng-01a-bootstrap 任務分支執行。' >&2
+            exit 1
+        fi
+        "$bundle/bin/codex" login status
+        task='請讀 AGENTS.md、docs/collaboration/herdr-handoff.md 與 docs/engineering/implementation-plan.md，依必讀順序核對工程契約後，實作 ENG-01A。交付 ADR、package manifest、lockfile、lint/typecheck/test 與 CI，執行驗收並回報實際結果、修改檔案與下一項依賴。本輪只處理 ENG-01A，使用 mock。在此任務分支工作。'
+        exec "$hc" run --bg --no-parent --name "$agent" --label project=travel-ai-platform \
+            --cwd "$repo" -- env "PATH=$PATH" "$bundle/bin/codex" --sandbox workspace-write \
+            --ask-for-approval on-request --cd "$repo" "$task"
+        ;;
+    status) exec "$hc" ls --all --label project=travel-ai-platform ;;
+    attach) exec "$hc" attach "$agent" ;;
+esac

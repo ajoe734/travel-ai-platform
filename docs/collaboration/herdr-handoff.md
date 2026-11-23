@@ -13,6 +13,20 @@ node tests/prototype-regression.cjs
 
 先不要索取真實供應商、金流或商家帳號。第一階段只需本機開發環境、PostgreSQL 測試資料庫與 mock connector；任何真實外部副作用均不在目前授權範圍。
 
+## 專用 Linux 開發機
+
+在包含本設定與工程契約的 checkout，以日常 SSH 使用者執行。環境需要 x86_64 Linux、Git、Python 3、curl、tar、xz 及 flock。工具組安裝於使用者目錄，包含 Herdr Core、Node.js 與 Codex CLI。
+
+```bash
+git switch -c feat/eng-01a-bootstrap
+bash scripts/herdr-dev install
+bash scripts/herdr-dev check
+bash scripts/herdr-dev login
+bash scripts/herdr-dev start
+```
+
+若任務分支已存在，用 `git switch feat/eng-01a-bootstrap` 接續。Codex 已登入時可略過 login。check 透過真正的 Herdr 終端執行原檔檢查與原型測試，start 會把 ENG-01A 交給具名的 Codex 終端。重新 SSH 後以 `bash scripts/herdr-dev status` 查詢、以 `bash scripts/herdr-dev attach` 接回。測試等級為規格靜態檢查與 Node 原型回歸。
+
 ## 必讀順序
 
 1. [AGENTS.md](../../AGENTS.md)
