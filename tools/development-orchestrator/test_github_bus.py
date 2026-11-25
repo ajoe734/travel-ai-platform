@@ -1,0 +1,1419 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import copy
+import json
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import github_bus
+from github_command_parser import GitHubCommand
+
+
+class BoundCandidatePRReadinessTests(unittest.TestCase):
+    """Exercise real upsert/observation code; double only GitHub and log I/O."""
+
+    REPO = "ajoe734/travel-ai-platform"
+    CASES = (
+        (
+            "PAX-FARE-COPY-20261015", 2724,
+            "a06e2010bbee0fda55f449250bb2159a8ab2b2de",
+            "codex/pax-fare-copy-20261015-delivery-r2-20261016",
+        ),
+        (
+            "TENANT-RULES-SLA-WEBHOOK-DURABLE-FLOW-20261015", 2708,
+            "3f4a0218380d5384611fd950b342f7c4798a5c33",
+            "codex/tenant-rules-sla-webhook-durable-flow-20261015-delivery-r4-20261015",
+        ),
+    )
+
+    def setUp(self) -> None:
+        self.config = {"github_bus": {"default_branch": "dev"}}
+        self.calls = []
+        self.failure = None
+        self.gh = self.enterContext(mock.patch.object(github_bus, "run_gh", side_effect=self.github))
+        self.enterContext(mock.patch.object(github_bus, "write_activity_log"))
+        self.metadata = self.enterContext(mock.patch.object(github_bus, "sync_optional_pr_metadata"))
+        self.board = self.enterContext(mock.patch.object(github_bus, "run_ai_status"))
+        self.configure_case(self.CASES[0])
+
+    def configure_case(self, case, cache="cold", draft=True) -> None:
+        task_id, self.number, sha, branch = case
+        self.task = {
+            "id": task_id, "title": "Original candidate", "status": "integrating",
+            "owner": "Codex", "reviewer": "Claude2", "mutates_canonical": True,
+            "candidate_sha": sha, "candidate_branch": branch,
+            "pr_url": f"https://github.com/{self.REPO}/pull/{self.number}",
+        }
+        self.bound = {
+            "number": self.number, "url": self.task["pr_url"],
+            "branch": branch, "head_sha": sha, "state": "bound",
+        }
+        self.observation = {
+            "url": self.task["pr_url"], "state": "OPEN", "isDraft": draft,
+            "headRefName": branch, "headRefOid": sha, "statusCheckRollup": [],
+        }
+        self.state = {"tasks": {}}
+        entry = github_bus.task_bus_entry(self.state, task_id)
+        if cache == "warm":
+            entry["review_pr"] = copy.deepcopy(self.bound)
+        elif cache == "stale":
+            entry["review_pr"] = {
+                "number": 1404, "url": f"https://github.com/{self.REPO}/pull/1404",
+                "branch": "codex/older-candidate", "head_sha": "b" * 40, "state": "open",
+            }
+            entry["last_review_hash"] = "preserved stale metadata"
+        self.calls.clear()
+
+    def github(self, args):
+        self.calls.append(args)
+        if args == self.view_argv():
+            if self.failure == "observe":
+                raise github_bus.GitHubBusOffline("observation unavailable")
+            return subprocess.CompletedProcess(["gh", *args], 0, json.dumps(self.observation), "")
+        if args == self.ready_argv():
+            if self.failure == "ready":
+                raise github_bus.GitHubBusError("ready failed")
+            self.observation["isDraft"] = False
+            return subprocess.CompletedProcess(["gh", *args], 0, "", "")
+        self.fail(f"Unexpected GitHub create/edit/search/alternate call: {args}")
+
+    def view_argv(self):
+        return [
+            "pr", "view", str(self.number), "--repo", self.REPO, "--json",
+            "url,state,isDraft,headRefName,headRefOid,mergeStateStatus,mergeCommit,statusCheckRollup",
+        ]
+
+    def ready_argv(self):
+        return ["pr", "ready", str(self.number), "--repo", self.REPO]
+
+    def upsert(self):
+        status = {"tasks": [self.task], "agents": [{"name": "Codex", "branch": "codex/stale"}]}
+        original = copy.deepcopy(status)
+        result = github_bus.upsert_review_pr(self.config, self.state, status, self.REPO, self.task)
+        self.assertEqual(status, original)
+        self.metadata.assert_not_called()
+        self.board.assert_not_called()
+        return result
+
+    def test_sealed_real_four_cases_observe_and_ready_bound_candidate(self) -> None:
+        # The two sealed identities, each with cold and actual identical bound cache.
+        for case in self.CASES:
+            for cache in ("cold", "warm"):
+                with self.subTest(task=case[0], cache=cache):
+                    self.configure_case(case, cache)
+                    self.assertTrue(self.upsert())
+                    self.assertEqual(self.calls, [self.view_argv(), self.ready_argv()])
+                    self.assertEqual(self.state["tasks"][case[0]]["review_pr"], self.bound)
+                    # A fresh observation on the next tick proves no redundant ready.
+                    self.assertFalse(self.upsert())
+                    self.assertEqual(self.calls, [self.view_argv(), self.ready_argv(), self.view_argv()])
+
+    def test_already_ready_is_observed_without_mutation_even_with_identical_cache(self) -> None:
+        for cache in ("cold", "warm"):
+            with self.subTest(cache=cache):
+                self.configure_case(self.CASES[0], cache, draft=False)
+                self.assertEqual(self.upsert(), cache == "cold")
+                self.assertFalse(self.upsert())
+                self.assertEqual(self.calls, [self.view_argv(), self.view_argv()])
+                self.assertEqual(self.state["tasks"][self.task["id"]]["review_pr"], self.bound)
+
+    def test_bound_handoff_wins_over_stale_cached_pr(self) -> None:
+        self.configure_case(self.CASES[0], "stale")
+        self.assertTrue(self.upsert())
+        self.assertEqual(self.calls, [self.view_argv(), self.ready_argv()])
+        entry = self.state["tasks"][self.task["id"]]
+        self.assertEqual(entry["review_pr"], self.bound)
+        self.assertEqual(entry["last_review_hash"], "preserved stale metadata")
+
+    def test_drift_closed_or_untrustworthy_observation_defers_and_preserves_cache(self) -> None:
+        overrides = (
+            {"headRefOid": "b" * 40}, {"headRefOid": ""},
+            {"headRefName": "codex/other"}, {"headRefName": ""},
+            {"state": "CLOSED"}, {"state": "MERGED"}, {"state": ""},
+            {"isDraft": "true"}, {"isDraft": None}, {"isDraft": 1},
+        )
+        for cache in ("cold", "warm", "stale"):
+            for override in overrides:
+                with self.subTest(cache=cache, override=override):
+                    self.configure_case(self.CASES[0], cache)
+                    self.observation.update(override)
+                    before = copy.deepcopy(self.state)
+                    self.assertFalse(self.upsert())
+                    self.assertEqual(self.calls, [self.view_argv()])
+                    self.assertEqual(self.state, before)
+
+    def test_missing_or_noncanonical_locked_candidate_never_falls_back_to_other_pr(self) -> None:
+        overrides = (
+            {"candidate_sha": None}, {"candidate_sha": ""},
+            {"candidate_sha": "not_applicable"}, {"candidate_sha": "abc123"},
+            {"candidate_sha": "z" * 40}, {"candidate_branch": None},
+            {"candidate_branch": ""}, {"candidate_branch": "not_applicable"},
+            {"mutates_canonical": False},
+        )
+        for cache in ("cold", "warm", "stale"):
+            for override in overrides:
+                with self.subTest(cache=cache, override=override):
+                    self.configure_case(self.CASES[0], cache)
+                    self.task.update(override)
+                    before = copy.deepcopy(self.state)
+                    self.assertFalse(self.upsert())
+                    self.assertEqual(self.calls, [])
+                    self.assertEqual(self.state, before)
+
+    def test_observation_and_ready_failures_preserve_metadata_and_retry_normally(self) -> None:
+        for cache in ("cold", "warm", "stale"):
+            for failure in ("observe", "ready", "bad_payload"):
+                with self.subTest(cache=cache, failure=failure):
+                    self.configure_case(self.CASES[0], cache)
+                    self.failure = failure
+                    if failure == "bad_payload":
+                        self.observation = []
+                    before = copy.deepcopy(self.state)
+                    original_task = copy.deepcopy(self.task)
+                    with self.assertRaises(github_bus.GitHubBusError):
+                        self.upsert()
+                    expected = [self.view_argv()]
+                    if failure == "ready":
+                        expected.append(self.ready_argv())
+                    self.assertEqual(self.calls, expected)
+                    self.assertEqual(self.state, before)
+                    self.assertEqual(self.task, original_task)
+                    self.board.assert_not_called()
+                    self.metadata.assert_not_called()
+                    # Failure is not cached as success; ordinary next call retries.
+                    self.failure = None
+                    self.observation = {
+                        "state": "OPEN", "isDraft": True,
+                        "headRefOid": self.task["candidate_sha"],
+                        "headRefName": self.task["candidate_branch"],
+                    }
+                    self.assertTrue(self.upsert())
+                    self.assertEqual(self.calls, expected + [self.view_argv(), self.ready_argv()])
+
+
+class GitHubBusCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.config = {
+            "github_bus": {
+                "reviewers": {
+                    "Claude": ["ajoe734"],
+                    "Codex": ["ajoe734"],
+                }
+            }
+        }
+        self.bus_state = {"tasks": {}}
+
+    def test_pr_head_drift_never_replaces_a_handoff_candidate(self) -> None:
+        task = {"id": "DRIFT-001", "status": "review", "candidate_sha": "reviewed-sha", "candidate_branch": "claude/drift"}
+        with (
+            mock.patch.object(github_bus, "candidate_pr_for_task", return_value=77),
+            mock.patch.object(github_bus, "candidate_pr_observation", return_value={"headRefOid": "later-wip-sha", "headRefName": "claude/drift"}),
+            mock.patch.object(github_bus, "run_ai_status") as reconcile,
+            mock.patch.object(github_bus, "write_activity_log") as activity_log,
+        ):
+            changed = github_bus.reconcile_candidate_lifecycle(self.config, self.bus_state, {"tasks": [task]}, "ajoe734/pantheon")
+
+        self.assertTrue(changed)
+        reconcile.assert_not_called()
+        self.assertEqual(
+            self.bus_state["tasks"]["DRIFT-001"]["candidate_head_mismatch"],
+            {"candidate_sha": "reviewed-sha", "head_sha": "later-wip-sha", "pr": 77},
+        )
+        self.assertEqual(activity_log.call_args.args[1]["type"], "github_candidate_head_mismatch")
+
+    def test_a_matching_head_clears_a_stale_drift_marker(self) -> None:
+        task = {"id": "DRIFT-002", "status": "review", "candidate_sha": "reviewed-sha", "candidate_branch": "claude/drift"}
+        self.bus_state["tasks"]["DRIFT-002"] = {"candidate_head_mismatch": {"candidate_sha": "reviewed-sha", "head_sha": "old", "pr": 77}}
+        observation = {"headRefOid": "reviewed-sha", "headRefName": "claude/drift", "state": "OPEN", "mergeStateStatus": "CLEAN", "mergeCommit": None, "statusCheckRollup": []}
+        with (
+            mock.patch.object(github_bus, "candidate_pr_for_task", return_value=77),
+            mock.patch.object(github_bus, "candidate_pr_observation", return_value=observation),
+            mock.patch.object(github_bus, "run_ai_status"),
+            mock.patch.object(github_bus, "write_activity_log"),
+        ):
+            github_bus.reconcile_candidate_lifecycle(self.config, self.bus_state, {"tasks": [task]}, "ajoe734/pantheon")
+
+        self.assertNotIn("candidate_head_mismatch", self.bus_state["tasks"]["DRIFT-002"])
+
+    def test_apply_bus_command_review_approve_uses_reviewer_actor(self) -> None:
+        status = {
+            "tasks": [
+                {
+                    "id": "LIN-001",
+                    "status": "review",
+                    "owner": "Codex",
+                    "reviewer": "Claude",
+                    "candidate_sha": "abc123",
+                    "candidate_branch": "feature/lin-001",
+                    "next": "ready for review",
+                }
+            ]
+        }
+        command = GitHubCommand(verb="approve", target="LIN-001", raw="/approve LIN-001")
+
+        with (
+            mock.patch.object(github_bus, "run_ai_status") as run_ai_status,
+            mock.patch.object(github_bus, "write_activity_log"),
+        ):
+            changed, reply = github_bus.apply_bus_command(
+                self.config,
+                self.bus_state,
+                status,
+                "ajoe734/pantheon",
+                command,
+                "ajoe734",
+                issue_number=4,
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(reply, "Applied `/approve` to `LIN-001`.")
+        run_ai_status.assert_called_once_with(
+            self.config,
+            "approve",
+            "LIN-001",
+            "GitHub approval bus approved via issue #4 by @ajoe734.",
+            actor="Claude",
+            extra_env={"REVIEWED_SHA": "abc123"},
+        )
+
+    def test_poll_pr_reviews_approved_uses_reviewer_approval(self) -> None:
+        status = {
+            "tasks": [
+                {
+                    "id": "LIN-001",
+                    "status": "review",
+                    "owner": "Codex",
+                    "reviewer": "Claude",
+                    "candidate_sha": "abc123",
+                    "candidate_branch": "feature/lin-001",
+                    "next": "ready for review",
+                }
+            ]
+        }
+        bus_state = {
+            "processed_review_ids": [],
+            "tasks": {
+                "LIN-001": {
+                    "review_pr": {"number": 12},
+                }
+            },
+        }
+
+        with (
+            mock.patch.object(
+                github_bus,
+                "gh_json",
+                return_value=[
+                    {
+                        "id": 999,
+                        "state": "APPROVED",
+                        "body": "looks good",
+                        "user": {"login": "ajoe734"},
+                        "commit_id": "abc123",
+                    }
+                ],
+            ),
+            mock.patch.object(github_bus, "run_ai_status") as run_ai_status,
+            mock.patch.object(github_bus, "write_activity_log") as write_activity_log,
+        ):
+            changed = github_bus.poll_pr_reviews(self.config, bus_state, status, "ajoe734/pantheon")
+
+        self.assertTrue(changed)
+        run_ai_status.assert_called_once_with(
+            self.config,
+            "approve",
+            "LIN-001",
+            "GitHub PR approved via PR #12 by @ajoe734.",
+            actor="Claude",
+            extra_env={"REVIEWED_SHA": "abc123"},
+        )
+        self.assertEqual(bus_state["processed_review_ids"], ["review:999"])
+        write_activity_log.assert_called_once()
+
+    def test_poll_pr_reviews_only_polls_tasks_inside_the_candidate_lifecycle(self) -> None:
+        """147 done tasks' PRs were polled serially every sync -- a 104s stall per tick."""
+        status = {
+            "tasks": [
+                {"id": "DONE-001", "status": "done", "reviewer": "Claude"},
+                {"id": "BLOCKED-001", "status": "blocked", "reviewer": "Claude"},
+                {"id": "TODO-001", "status": "todo", "reviewer": "Claude"},
+                {"id": "LIVE-001", "status": "review", "reviewer": "Claude", "candidate_sha": "abc123"},
+                {"id": "LIVE-002", "status": "integrating", "reviewer": "Claude", "candidate_sha": "def456"},
+            ]
+        }
+        bus_state = {
+            "processed_review_ids": [],
+            "tasks": {tid: {"review_pr": {"number": n}} for tid, n in
+                      (("DONE-001", 1), ("BLOCKED-001", 2), ("TODO-001", 3), ("LIVE-001", 4), ("LIVE-002", 5))},
+        }
+        with (
+            mock.patch.object(github_bus, "gh_json", return_value=[]) as gh_json,
+            mock.patch.object(github_bus, "run_ai_status"),
+            mock.patch.object(github_bus, "write_activity_log"),
+        ):
+            github_bus.poll_pr_reviews(self.config, bus_state, status, "ajoe734/pantheon")
+
+        polled = sorted(call.args[0][1] for call in gh_json.call_args_list)
+        self.assertEqual(
+            polled,
+            ["repos/ajoe734/pantheon/pulls/4/reviews?per_page=100", "repos/ajoe734/pantheon/pulls/5/reviews?per_page=100"],
+        )
+
+    def test_poll_issue_comments_asks_github_only_for_comments_since_the_previous_sync(self) -> None:
+        """16 open tasks' issue threads were re-read in full every sync, ~2s each, inside the tick."""
+        status = {"tasks": [{"id": "BLOCKED-001", "status": "blocked"}]}
+        bus_state = {
+            "processed_comment_ids": [],
+            "last_sync_at": "2026-09-22T05:30:00Z",
+            "tasks": {"BLOCKED-001": {"ops_issue": {"number": 8}}},
+        }
+        with mock.patch.object(github_bus, "gh_json", return_value=[]) as gh_json:
+            github_bus.poll_issue_comments(self.config, bus_state, status, "ajoe734/pantheon")
+
+        self.assertEqual(
+            [call.args[0][1] for call in gh_json.call_args_list],
+            ["repos/ajoe734/pantheon/issues/8/comments?per_page=100&since=2026-09-22T05:20:00Z"],
+        )
+
+    def test_the_first_sync_reads_every_comment(self) -> None:
+        status = {"tasks": [{"id": "BLOCKED-001", "status": "blocked"}]}
+        bus_state = {"processed_comment_ids": [], "tasks": {"BLOCKED-001": {"ops_issue": {"number": 8}}}}
+        with mock.patch.object(github_bus, "gh_json", return_value=[]) as gh_json:
+            github_bus.poll_issue_comments(self.config, bus_state, status, "ajoe734/pantheon")
+
+        self.assertEqual([call.args[0][1] for call in gh_json.call_args_list],
+                         ["repos/ajoe734/pantheon/issues/8/comments?per_page=100"])
+
+    def test_poll_issue_comments_skips_done_tasks(self) -> None:
+        status = {
+            "tasks": [
+                {"id": "DONE-001", "status": "done"},
+                {"id": "BLOCKED-001", "status": "blocked"},
+            ]
+        }
+        bus_state = {
+            "processed_comment_ids": [],
+            "tasks": {"DONE-001": {"ops_issue": {"number": 7}}, "BLOCKED-001": {"ops_issue": {"number": 8}}},
+        }
+        with mock.patch.object(github_bus, "gh_json", return_value=[]) as gh_json:
+            github_bus.poll_issue_comments(self.config, bus_state, status, "ajoe734/pantheon")
+
+        self.assertEqual([call.args[0][1] for call in gh_json.call_args_list],
+                         ["repos/ajoe734/pantheon/issues/8/comments?per_page=100"])
+
+    def test_run_ai_status_uses_in_process_task_board_gateway(self) -> None:
+        result = mock.Mock(ok=True, error="")
+        with mock.patch.object(
+            github_bus, "run_task_board_command", return_value=result
+        ) as gateway:
+            github_bus.run_ai_status(
+                self.config,
+                "reconcile-candidate",
+                "LIN-001",
+                "Reconciled",
+                actor="Supervisor",
+                extra_env={"CANDIDATE_HEAD_SHA": "abc123"},
+            )
+
+        gateway.assert_called_once_with(
+            self.config,
+            "reconcile-candidate",
+            ["LIN-001", "Reconciled"],
+            environ={"AI_NAME": "Supervisor", "CANDIDATE_HEAD_SHA": "abc123"},
+        )
+
+    def test_upsert_review_pr_creates_core_pr_before_optional_metadata(self) -> None:
+        config = {
+            "github_bus": {
+                "default_branch": "dev",
+                "auto_request_reviewers": True,
+                "reviewers": {"Claude": ["ajoe734"]},
+                "labels": {"review": ["pantheon-bus", "pantheon-review"]},
+                "templates": {"review_pr": "tools/development-orchestrator/templates/github_review_pr.md"},
+            }
+        }
+        bus_state = {"tasks": {}}
+        status = {
+            "agents": [{"name": "Codex", "branch": "feature/lin-001"}],
+            "tasks": [],
+        }
+        task = {
+            "id": "LIN-001",
+            "title": "Lineage task",
+            "summary_zh": "review me",
+            "status": "review",
+            "owner": "Codex",
+            "reviewer": "Claude",
+            "depends_on": [],
+            "artifacts": ["foo.md"],
+            "next": "ready for review",
+            "candidate_sha": "abc123",
+            "candidate_branch": "feature/lin-001",
+        }
+
+        with (
+            mock.patch.object(github_bus, "branch_exists", return_value=True),
+            mock.patch.object(github_bus, "branch_has_diff", return_value=True),
+            mock.patch.object(github_bus, "find_existing_pr", return_value=None),
+            mock.patch.object(github_bus, "build_template_body", return_value="body\n"),
+            mock.patch.object(
+                github_bus,
+                "run_gh",
+                return_value=subprocess.CompletedProcess(
+                    ["gh"],
+                    0,
+                    "https://github.com/ajoe734/pantheon/pull/12\n",
+                    "",
+                ),
+            ) as run_gh,
+            mock.patch.object(github_bus, "write_activity_log"),
+            mock.patch.object(github_bus, "candidate_pr_observation", return_value={"isDraft": True}),
+        ):
+            changed = github_bus.upsert_review_pr(config, bus_state, status, "ajoe734/pantheon", task)
+
+        self.assertTrue(changed)
+        self.assertEqual(run_gh.call_count, 3)
+        args = run_gh.call_args_list[0].args[0]
+        self.assertNotIn("--label", args)
+        self.assertNotIn("--add-label", args)
+        self.assertNotIn("--reviewer", args)
+        self.assertIn("--draft", args)
+        metadata_args = run_gh.call_args_list[1].args[0]
+        self.assertIn("--add-label", metadata_args)
+        self.assertIn("--add-reviewer", metadata_args)
+        self.assertEqual(run_gh.call_args_list[2].args[0][:3], ["pr", "ready", "12"])
+
+    def test_find_existing_pr_uses_exact_head_and_base(self) -> None:
+        with mock.patch.object(github_bus, "gh_json", return_value=[]) as gh_json:
+            found = github_bus.find_existing_pr(
+                "ajoe734/pantheon", "feature/lin-001", "dev"
+            )
+
+        self.assertIsNone(found)
+        args = gh_json.call_args.args[0]
+        self.assertEqual(args[args.index("--head") + 1], "feature/lin-001")
+        self.assertEqual(args[args.index("--base") + 1], "dev")
+        self.assertNotIn("--search", args)
+
+    def test_upsert_review_pr_adopts_existing_branch_pr_with_any_title(self) -> None:
+        config = {
+            "github_bus": {
+                "default_branch": "dev",
+                "auto_request_reviewers": False,
+                "templates": {
+                    "review_pr": "tools/development-orchestrator/templates/github_review_pr.md"
+                },
+            }
+        }
+        task = {
+            "id": "LIN-001",
+            "title": "Lineage task",
+            "status": "integrating",
+            "owner": "Codex",
+            "reviewer": "Claude",
+            "candidate_sha": "abc123",
+            "candidate_branch": "feature/lin-001",
+        }
+        bus_state = {"tasks": {}}
+        with (
+            mock.patch.object(github_bus, "branch_has_diff", return_value=True),
+            mock.patch.object(github_bus, "build_template_body", return_value="body\n"),
+            mock.patch.object(
+                github_bus,
+                "find_existing_pr",
+                return_value={
+                    "number": 1393,
+                    "url": "https://github.com/ajoe734/pantheon/pull/1393",
+                    "title": "Release candidate",
+                    "headRefOid": "abc123",
+                },
+            ) as find_existing,
+            mock.patch.object(github_bus, "run_gh") as run_gh,
+            mock.patch.object(
+                github_bus, "candidate_pr_observation", return_value={"isDraft": False}
+            ),
+            mock.patch.object(github_bus, "write_activity_log"),
+        ):
+            changed = github_bus.upsert_review_pr(
+                config, bus_state, {"tasks": [task]}, "ajoe734/pantheon", task
+            )
+
+        self.assertTrue(changed)
+        find_existing.assert_called_once_with(
+            "ajoe734/pantheon", "feature/lin-001", "dev"
+        )
+        self.assertEqual(bus_state["tasks"]["LIN-001"]["review_pr"]["number"], 1393)
+        self.assertEqual(run_gh.call_count, 1)
+
+    def test_optional_pr_metadata_failure_does_not_fail_lifecycle(self) -> None:
+        config = {
+            "github_bus": {
+                "auto_request_reviewers": False,
+            }
+        }
+        with (
+            mock.patch.object(
+                github_bus, "run_gh", side_effect=github_bus.GitHubBusError("label missing")
+            ),
+            mock.patch.object(github_bus, "write_activity_log") as write_activity_log,
+        ):
+            github_bus.sync_optional_pr_metadata(
+                config,
+                "ajoe734/pantheon",
+                {"id": "LIN-001"},
+                12,
+                ["pantheon-bus"],
+            )
+
+        write_activity_log.assert_called_once()
+
+    def test_upsert_ops_issue_creates_core_issue_before_optional_labels(self) -> None:
+        config = {
+            "github_bus": {
+                "labels": {"ops": ["pantheon-bus", "pantheon-blocked"]},
+                "templates": {
+                    "ops_issue": "tools/development-orchestrator/templates/github_ops_issue.md"
+                },
+            }
+        }
+        bus_state = {"tasks": {}}
+        task = {
+            "id": "LIN-001",
+            "title": "Blocked lineage task",
+            "status": "blocked",
+            "owner": "Codex",
+            "reviewer": "Claude",
+        }
+
+        def run_gh(args: list[str]) -> subprocess.CompletedProcess[str]:
+            if args[:2] == ["issue", "create"]:
+                return subprocess.CompletedProcess(
+                    ["gh"],
+                    0,
+                    "https://github.com/ajoe734/pantheon/issues/44\n",
+                    "",
+                )
+            raise github_bus.GitHubBusError("label missing")
+
+        with (
+            mock.patch.object(github_bus, "find_existing_issue", return_value=None),
+            mock.patch.object(github_bus, "build_template_body", return_value="body\n"),
+            mock.patch.object(github_bus, "run_gh", side_effect=run_gh) as run_gh_mock,
+            mock.patch.object(github_bus, "write_activity_log") as write_activity_log,
+        ):
+            changed = github_bus.upsert_ops_issue(
+                config,
+                bus_state,
+                "ajoe734/pantheon",
+                task,
+                "blocked",
+                "details",
+            )
+
+        self.assertTrue(changed)
+        self.assertEqual(run_gh_mock.call_count, 2)
+        create_args = run_gh_mock.call_args_list[0].args[0]
+        self.assertNotIn("--label", create_args)
+        self.assertNotIn("--add-label", create_args)
+        metadata_args = run_gh_mock.call_args_list[1].args[0]
+        self.assertIn("--add-label", metadata_args)
+        self.assertEqual(bus_state["tasks"]["LIN-001"]["ops_issue"]["number"], 44)
+        self.assertEqual(
+            [call.args[1]["type"] for call in write_activity_log.call_args_list],
+            ["github_ops_issue_metadata_failed", "github_ops_issue_synced"],
+        )
+
+    def test_upsert_review_pr_skips_support_only_task(self) -> None:
+        task = {
+            "id": "LIN-001-SIDECAR-REVIEW",
+            "title": "Support review",
+            "status": "review",
+            "candidate_sha": "not_applicable",
+        }
+        with (
+            mock.patch.object(github_bus, "run_gh") as run_gh,
+            mock.patch.object(github_bus, "write_activity_log"),
+        ):
+            changed = github_bus.upsert_review_pr(
+                self.config,
+                self.bus_state,
+                {"tasks": [task]},
+                "ajoe734/pantheon",
+                task,
+            )
+
+        self.assertTrue(changed)
+        run_gh.assert_not_called()
+        self.assertEqual(self.bus_state["tasks"][task["id"]]["review_pr"]["state"], "skipped_no_candidate")
+
+    def test_sync_outbound_opens_pr_after_fast_review_reaches_integrating(self) -> None:
+        task = {
+            "id": "LIN-001",
+            "status": "integrating",
+            "candidate_sha": "abc123",
+            "candidate_branch": "feature/lin-001",
+        }
+        status = {"tasks": [task], "blockers": []}
+
+        with mock.patch.object(github_bus, "upsert_review_pr", return_value=True) as upsert:
+            changed = github_bus.sync_outbound(
+                self.config,
+                self.bus_state,
+                status,
+                {},
+                "ajoe734/pantheon",
+            )
+
+        self.assertTrue(changed)
+        upsert.assert_called_once_with(
+            self.config,
+            self.bus_state,
+            status,
+            "ajoe734/pantheon",
+            task,
+        )
+
+    def test_candidate_ci_status_requires_all_checks_to_complete(self) -> None:
+        running, _ = github_bus.candidate_ci_status(
+            {
+                "state": "OPEN",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [{"status": "IN_PROGRESS", "conclusion": None}],
+            }
+        )
+        failed, _ = github_bus.candidate_ci_status(
+            {
+                "state": "OPEN",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "FAILURE"}],
+            }
+        )
+        successful, _ = github_bus.candidate_ci_status(
+            {
+                "state": "OPEN",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [{"status": "COMPLETED", "conclusion": "SUCCESS"}],
+            }
+        )
+
+        self.assertEqual(running, "running")
+        self.assertEqual(failed, "failure")
+        self.assertEqual(successful, "success")
+
+    def test_candidate_ci_status_ignores_a_cancelled_run_superseded_by_a_rerun(self) -> None:
+        # A concurrency-group rerun cancels the older run for the same job
+        # name but GitHub keeps both entries in statusCheckRollup. Only the
+        # most recently started entry per name should decide the outcome.
+        status, _ = github_bus.candidate_ci_status(
+            {
+                "state": "OPEN",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [
+                    {
+                        "workflowName": "CI",
+                        "name": "Smoke acceptance",
+                        "status": "COMPLETED",
+                        "conclusion": "CANCELLED",
+                        "startedAt": "2026-08-23T05:19:49Z",
+                    },
+                    {
+                        "workflowName": "CI",
+                        "name": "Smoke acceptance",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-08-23T05:20:16Z",
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(status, "success")
+
+    def test_candidate_ci_status_still_fails_when_the_latest_run_failed(self) -> None:
+        status, _ = github_bus.candidate_ci_status(
+            {
+                "state": "OPEN",
+                "mergeStateStatus": "CLEAN",
+                "statusCheckRollup": [
+                    {
+                        "workflowName": "CI",
+                        "name": "unit",
+                        "status": "COMPLETED",
+                        "conclusion": "SUCCESS",
+                        "startedAt": "2026-08-23T05:19:49Z",
+                    },
+                    {
+                        "workflowName": "CI",
+                        "name": "unit",
+                        "status": "COMPLETED",
+                        "conclusion": "FAILURE",
+                        "startedAt": "2026-08-23T05:20:16Z",
+                    },
+                ],
+            }
+        )
+
+        self.assertEqual(status, "failure")
+
+    def test_reconcile_skips_an_unchanged_same_sha_observation(self) -> None:
+        task = {
+            "id": "LIN-001",
+            "status": "integrating",
+            "candidate_sha": "abc123",
+            "candidate_branch": "feature/lin-001",
+            "ci_sha": "abc123",
+            "ci_status": "success",
+            "pr_url": "https://github.com/ajoe734/pantheon/pull/12",
+            "ci_run_url": "https://github.com/ajoe734/pantheon/actions/runs/99",
+            "merge_sha": "",
+        }
+        bus_state = {"tasks": {"LIN-001": {"review_pr": {"number": 12}}}}
+        observation = {
+            "url": task["pr_url"],
+            "state": "OPEN",
+            "headRefName": task["candidate_branch"],
+            "headRefOid": task["candidate_sha"],
+            "mergeStateStatus": "CLEAN",
+            "mergeCommit": None,
+            "statusCheckRollup": [
+                {
+                    "status": "COMPLETED",
+                    "conclusion": "SUCCESS",
+                    "detailsUrl": task["ci_run_url"],
+                }
+            ],
+        }
+        with (
+            mock.patch.object(github_bus, "candidate_pr_observation", return_value=observation),
+            mock.patch.object(github_bus, "run_ai_status") as run_ai_status,
+        ):
+            changed = github_bus.reconcile_candidate_lifecycle(
+                self.config, bus_state, {"tasks": [task]}, "ajoe734/pantheon"
+            )
+
+        self.assertFalse(changed)
+        run_ai_status.assert_not_called()
+
+    def test_candidate_pr_prefers_handoff_bound_pr_over_stale_cache(self) -> None:
+        task = {
+            "id": "LIN-001",
+            "candidate_sha": "new-sha",
+            "candidate_branch": "codex/lin-001-clean",
+            "pr_url": "https://github.com/ajoe734/pantheon/pull/1419",
+        }
+        bus_state = {
+            "tasks": {
+                "LIN-001": {
+                    "review_pr": {
+                        "number": 1404,
+                        "branch": "codex/lin-001",
+                        "head_sha": "old-sha",
+                    }
+                }
+            }
+        }
+
+        number = github_bus.candidate_pr_for_task(self.config, bus_state, "ajoe734/pantheon", task)
+
+        self.assertEqual(number, 1419)
+        self.assertEqual(bus_state["tasks"]["LIN-001"]["review_pr"]["head_sha"], "new-sha")
+
+    def test_candidate_pr_discards_unbound_stale_cache_before_branch_lookup(self) -> None:
+        task = {
+            "id": "LIN-001",
+            "candidate_sha": "new-sha",
+            "candidate_branch": "codex/lin-001-clean",
+        }
+        bus_state = {
+            "tasks": {
+                "LIN-001": {
+                    "review_pr": {
+                        "number": 1404,
+                        "branch": "codex/lin-001",
+                        "head_sha": "old-sha",
+                    }
+                }
+            }
+        }
+        found = {
+            "number": 1419,
+            "url": "https://github.com/ajoe734/pantheon/pull/1419",
+            "headRefName": "codex/lin-001-clean",
+            "headRefOid": "new-sha",
+            "state": "OPEN",
+        }
+
+        with mock.patch.object(github_bus, "find_existing_pr", return_value=found) as find_existing:
+            number = github_bus.candidate_pr_for_task(self.config, bus_state, "ajoe734/pantheon", task)
+
+        self.assertEqual(number, 1419)
+        find_existing.assert_called_once_with("ajoe734/pantheon", "codex/lin-001-clean", "main")
+        self.assertEqual(bus_state["tasks"]["LIN-001"]["review_pr"]["head_sha"], "new-sha")
+
+    def test_upsert_review_pr_does_not_edit_stale_candidate_pr(self) -> None:
+        config = {
+            "github_bus": {
+                "default_branch": "dev",
+                "auto_request_reviewers": False,
+                "templates": {
+                    "review_pr": "tools/development-orchestrator/templates/github_review_pr.md"
+                },
+            }
+        }
+        task = {
+            "id": "LIN-001",
+            "title": "Lineage task",
+            "summary_zh": "review me",
+            "status": "review",
+            "owner": "Codex",
+            "reviewer": "Claude",
+            "depends_on": [],
+            "artifacts": ["foo.md"],
+            "next": "ready for review",
+            "candidate_sha": "new-sha",
+            "candidate_branch": "codex/lin-001-clean",
+        }
+        bus_state = {
+            "tasks": {
+                "LIN-001": {
+                    "review_pr": {
+                        "number": 1404,
+                        "branch": "codex/lin-001",
+                        "head_sha": "old-sha",
+                    }
+                }
+            }
+        }
+        found = {
+            "number": 1419,
+            "url": "https://github.com/ajoe734/pantheon/pull/1419",
+            "headRefName": "codex/lin-001-clean",
+            "headRefOid": "new-sha",
+        }
+
+        with (
+            mock.patch.object(github_bus, "branch_has_diff", return_value=True),
+            mock.patch.object(github_bus, "build_template_body", return_value="body\n"),
+            mock.patch.object(github_bus, "find_existing_pr", return_value=found),
+            mock.patch.object(github_bus, "run_gh") as run_gh,
+            mock.patch.object(github_bus, "candidate_pr_observation", return_value={"isDraft": False}),
+            mock.patch.object(github_bus, "write_activity_log"),
+        ):
+            changed = github_bus.upsert_review_pr(
+                config, bus_state, {"tasks": [task]}, "ajoe734/pantheon", task
+            )
+
+        self.assertTrue(changed)
+        self.assertTrue(all("1404" not in call.args[0] for call in run_gh.call_args_list))
+        self.assertEqual(bus_state["tasks"]["LIN-001"]["review_pr"]["number"], 1419)
+
+    def test_auto_merge_is_requested_once_for_a_same_sha_candidate(self) -> None:
+        task = {
+            "id": "LIN-001",
+            "status": "integrating",
+            "candidate_sha": "abc123",
+            "candidate_branch": "codex/lin-001",
+            "reviewed_sha": "abc123",
+            "ci_sha": "abc123",
+            "ci_status": "success",
+        }
+        config = {"github_bus": {"auto_merge": {"enabled": True}}}
+        bus_state = {
+            "tasks": {
+                "LIN-001": {
+                    "review_pr": {
+                        "number": 12,
+                        "branch": "codex/lin-001",
+                        "head_sha": "abc123",
+                    }
+                }
+            }
+        }
+        with (
+            mock.patch.object(github_bus, "run_gh") as run_gh,
+            mock.patch.object(github_bus, "candidate_pr_observation", return_value={"headRefOid": "abc123"}),
+            mock.patch.object(github_bus, "write_activity_log"),
+        ):
+            first = github_bus.request_candidate_auto_merge(
+                config, bus_state, {"tasks": [task]}, "ajoe734/pantheon"
+            )
+            second = github_bus.request_candidate_auto_merge(
+                config, bus_state, {"tasks": [task]}, "ajoe734/pantheon"
+            )
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        run_gh.assert_called_once_with(["pr", "merge", "12", "--repo", "ajoe734/pantheon", "--auto", "--squash"])
+
+
+class GitHubBusProcessTests(unittest.TestCase):
+    def test_run_gh_process_kills_process_group_on_timeout(self) -> None:
+        class FakePopen:
+            def __init__(self) -> None:
+                self.pid = 4321
+                self.returncode = None
+                self.wait_calls: list[float | None] = []
+
+            def wait(self, timeout: float | None = None) -> int:
+                self.wait_calls.append(timeout)
+                raise subprocess.TimeoutExpired(cmd=["gh", "api"], timeout=timeout)
+
+        fake_process = FakePopen()
+
+        with (
+            mock.patch.object(github_bus.subprocess, "Popen", return_value=fake_process),
+            mock.patch.object(github_bus.os, "killpg") as killpg,
+        ):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                github_bus.run_gh_process(["api", "repos/ajoe734/pantheon/issues/4/comments"], timeout_seconds=1.0)
+
+        killpg.assert_called_once_with(4321, github_bus.signal.SIGKILL)
+        self.assertEqual(fake_process.wait_calls, [1.0, 0.2])
+
+
+class GitHubBusLabelTests(unittest.TestCase):
+    REPO = "ajoe734/pantheon"
+    CONFIG = {"github_bus": {"auto_request_reviewers": False}}
+
+    def setUp(self) -> None:
+        github_bus._LABELS_UNAVAILABLE.clear()
+
+    def test_happy_path_adds_no_extra_gh_call(self) -> None:
+        """The label repair must not cost anything when the label exists."""
+        with (
+            mock.patch.object(github_bus, "run_gh") as run_gh,
+            mock.patch.object(github_bus, "write_activity_log") as write_activity_log,
+        ):
+            github_bus.sync_optional_pr_metadata(
+                self.CONFIG, self.REPO, {"id": "LIN-001"}, 12, ["pantheon-bus"]
+            )
+
+        run_gh.assert_called_once()
+        self.assertIn("--add-label", run_gh.call_args.args[0])
+        write_activity_log.assert_not_called()
+
+    def test_missing_label_is_created_then_the_edit_is_retried(self) -> None:
+        calls: list[list[str]] = []
+
+        def run_gh(args: list[str]) -> None:
+            calls.append(args)
+            if args[:2] == ["pr", "edit"] and len(calls) == 1:
+                raise github_bus.GitHubBusError("'pantheon-bus' not found")
+
+        with (
+            mock.patch.object(github_bus, "run_gh", side_effect=run_gh),
+            mock.patch.object(github_bus, "write_activity_log") as write_activity_log,
+        ):
+            github_bus.sync_optional_pr_metadata(
+                self.CONFIG, self.REPO, {"id": "LIN-001"}, 12, ["pantheon-bus"]
+            )
+
+        self.assertEqual(
+            calls[1], ["label", "create", "pantheon-bus", "--repo", self.REPO]
+        )
+        self.assertEqual(calls[2][:2], ["pr", "edit"])
+        logged = [call.args[1]["type"] for call in write_activity_log.call_args_list]
+        self.assertEqual(logged, ["github_bus_label_created"])
+
+    def test_uncreatable_label_is_reported_once_then_dropped(self) -> None:
+        """The regression: one bad label, one failure event, every cycle, forever."""
+
+        def run_gh(args: list[str]) -> None:
+            if args[:2] == ["label", "create"]:
+                raise github_bus.GitHubBusError("permission denied")
+            raise github_bus.GitHubBusError("'pantheon-bus' not found")
+
+        with (
+            mock.patch.object(github_bus, "run_gh", side_effect=run_gh) as run_gh_mock,
+            mock.patch.object(github_bus, "write_activity_log") as write_activity_log,
+        ):
+            for _ in range(3):
+                github_bus.sync_optional_pr_metadata(
+                    self.CONFIG, self.REPO, {"id": "LIN-001"}, 12, ["pantheon-bus"]
+                )
+
+        logged = [call.args[1]["type"] for call in write_activity_log.call_args_list]
+        # First cycle: the edit fails, creation fails, both are recorded. Cycles
+        # two and three send no label at all, so `pr edit` has nothing to do and
+        # is never called -- no repeat of either event.
+        self.assertEqual(
+            logged, ["github_bus_label_unavailable", "github_review_pr_metadata_failed"]
+        )
+        self.assertEqual(
+            [args.args[0][:2] for args in run_gh_mock.call_args_list],
+            [["pr", "edit"], ["label", "create"]],
+        )
+
+    def test_unrelated_failure_is_not_treated_as_a_missing_label(self) -> None:
+        with (
+            mock.patch.object(
+                github_bus,
+                "run_gh",
+                side_effect=github_bus.GitHubBusError("HTTP 502 upstream"),
+            ) as run_gh,
+            mock.patch.object(github_bus, "write_activity_log") as write_activity_log,
+        ):
+            github_bus.sync_optional_pr_metadata(
+                self.CONFIG, self.REPO, {"id": "LIN-001"}, 12, ["pantheon-bus"]
+            )
+
+        run_gh.assert_called_once()
+        logged = [call.args[1]["type"] for call in write_activity_log.call_args_list]
+        self.assertEqual(logged, ["github_review_pr_metadata_failed"])
+        self.assertEqual(github_bus._LABELS_UNAVAILABLE, {})
+
+    def test_repair_ignores_a_label_the_caller_did_not_send(self) -> None:
+        repaired = github_bus.repair_missing_label(
+            self.CONFIG,
+            self.REPO,
+            ["pantheon-bus"],
+            github_bus.GitHubBusError("'some-other-label' not found"),
+        )
+        self.assertFalse(repaired)
+
+
+
+class WorkflowRunProvenanceTests(unittest.TestCase):
+    HEAD = "a" * 40
+    BRANCH = "claude/acceptance"
+
+    def run_record(self, run_id, **updates):
+        record = {"id": run_id, "workflow_id": 7, "event": "pull_request",
+                  "head_branch": self.BRANCH, "head_sha": self.HEAD,
+                  "pull_requests": [{"number": 1916}],
+                  "created_at": f"2026-09-10T14:0{run_id}:00Z",
+                  "status": "completed", "conclusion": "success",
+                  "html_url": f"https://github.com/example/repo/actions/runs/{run_id}"}
+        record.update(updates)
+        return record
+
+    def check(self, run_id, name, **updates):
+        check = {"workflowName": "CI", "name": name, "status": "COMPLETED",
+                 "conclusion": "SUCCESS", "startedAt": f"2026-09-10T14:0{run_id}:01Z",
+                 "detailsUrl": f"https://github.com/example/repo/actions/runs/{run_id}/job/{run_id * 10}"}
+        check.update(updates)
+        return check
+
+    def observation(self):
+        # The replacement aggregate job has no CheckRun yet. Its earlier jobs
+        # have passed, while the canceled run's aggregate reported FAILURE.
+        return {"state": "OPEN", "headRefOid": self.HEAD, "headRefName": self.BRANCH,
+                "statusCheckRollup": [self.check(1, "Smoke acceptance", conclusion="FAILURE"),
+                                      self.check(2, "Change scope")],
+                "workflowRuns": [self.run_record(1, conclusion="cancelled"),
+                                 self.run_record(2, status="in_progress", conclusion=None)]}
+
+    def test_old_cancelled_aggregate_does_not_outvote_live_replacement(self):
+        self.assertEqual(github_bus.candidate_ci_status(self.observation())[0], "running")
+
+    def test_completed_replacement_can_prove_success(self):
+        observation = self.observation()
+        observation["workflowRuns"][1] = self.run_record(2)
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "success")
+
+    def test_new_workflow_must_finish_even_when_all_visible_jobs_passed(self):
+        observation = self.observation()
+        observation["statusCheckRollup"] = [self.check(2, "Change scope")]
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "running")
+
+    def test_latest_workflow_failure_is_not_masked(self):
+        observation = self.observation()
+        observation["workflowRuns"][1] = self.run_record(2, conclusion="failure")
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "failure")
+
+    def test_latest_job_failure_is_not_masked_by_successful_run_metadata(self):
+        observation = self.observation()
+        observation["workflowRuns"][1] = self.run_record(2)
+        observation["statusCheckRollup"].append(self.check(2, "unit", conclusion="FAILURE"))
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "failure")
+
+    def test_old_late_starting_aggregate_does_not_select_old_workflow(self):
+        observation = self.observation()
+        observation["statusCheckRollup"][0]["startedAt"] = "2026-09-10T14:09:00Z"
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "running")
+
+    def test_other_workflow_or_event_or_pr_cannot_be_superseded(self):
+        for updates in ({"workflow_id": 8}, {"event": "workflow_dispatch"},
+                        {"pull_requests": [{"number": 1917}]}):
+            with self.subTest(updates=updates):
+                observation = self.observation()
+                observation["workflowRuns"][1] = self.run_record(2, **updates)
+                self.assertEqual(github_bus.candidate_ci_status(observation)[0], "failure")
+
+    def test_distinct_context_checks_are_not_collapsed_by_same_job_name(self):
+        observation = self.observation()
+        observation["workflowRuns"] = [self.run_record(1), self.run_record(2, event="workflow_dispatch")]
+        observation["statusCheckRollup"][1] = self.check(2, "Smoke acceptance")
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "failure")
+
+    def test_same_run_rerun_uses_latest_attempt_job(self):
+        observation = self.observation()
+        observation["workflowRuns"][1] = self.run_record(2, run_attempt=2)
+        observation["statusCheckRollup"].extend([
+            self.check(2, "unit", conclusion="FAILURE", startedAt="2026-09-10T14:02:02Z"),
+            self.check(2, "unit", startedAt="2026-09-10T14:03:02Z"),
+        ])
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "success")
+
+    def test_missing_or_foreign_provenance_never_proves_pass(self):
+        mutations = [lambda o: o.update(workflowRuns=[]),
+                     lambda o: o.update(workflowRunLookupFailed=True),
+                     lambda o: o["workflowRuns"][1].update(head_sha="b" * 40),
+                     lambda o: o["workflowRuns"][1].update(head_branch="other"),
+                     lambda o: o["workflowRuns"][1].update(pull_requests=None),
+                     lambda o: o["workflowRuns"][1].update(created_at="bad"),
+                     lambda o: o["workflowRuns"][1].update(status="completed", conclusion="unknown")]
+        for mutate in mutations:
+            observation = self.observation()
+            mutate(observation)
+            with self.subTest(observation=observation):
+                self.assertEqual(github_bus.candidate_ci_status(observation)[0], "running")
+
+    def test_non_actions_failure_is_preserved(self):
+        observation = self.observation()
+        observation["workflowRuns"][1] = self.run_record(2)
+        observation["statusCheckRollup"].append({"name": "external", "status": "COMPLETED",
+            "conclusion": "FAILURE", "detailsUrl": "https://ci.example.invalid/check/1"})
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "failure")
+
+    def test_metadata_fetch_once_for_actions_and_uses_exact_head(self):
+        observation = self.observation()
+        runs = observation.pop("workflowRuns")
+        with mock.patch.object(github_bus, "gh_json", side_effect=[observation, [{"workflow_runs": runs}]]) as gh:
+            result = github_bus.candidate_pr_observation("example/repo", 1916)
+        self.assertEqual(result["workflowRuns"], runs)
+        self.assertEqual(gh.call_count, 2)
+        self.assertEqual(gh.call_args.args[0], ["api", f"repos/example/repo/actions/runs?head_sha={self.HEAD}&per_page=100", "--paginate", "--slurp"])
+        with mock.patch.object(github_bus, "gh_json", return_value={"state": "OPEN", "statusCheckRollup": [{"name": "external", "detailsUrl": "https://ci.example.invalid/1"}]}) as gh:
+            github_bus.candidate_pr_observation("example/repo", 1916)
+        self.assertEqual(gh.call_count, 1)
+
+    def test_unobserved_new_run_still_blocks_old_success(self):
+        observation = self.observation()
+        observation["statusCheckRollup"] = [self.check(1, "unit")]
+        observation["workflowRuns"][0] = self.run_record(1)
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "running")
+
+    def test_unobserved_new_run_failure_is_not_masked(self):
+        observation = self.observation()
+        observation["statusCheckRollup"] = [self.check(1, "unit")]
+        observation["workflowRuns"][0] = self.run_record(1)
+        observation["workflowRuns"][1] = self.run_record(2, conclusion="failure")
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "failure")
+
+    def test_conflicting_duplicate_metadata_stays_pending(self):
+        observation = self.observation()
+        observation["workflowRuns"].append(self.run_record(2))
+        self.assertEqual(github_bus.candidate_ci_status(observation)[0], "running")
+
+    def test_metadata_lookup_failure_stays_pending(self):
+        observation = self.observation()
+        observation.pop("workflowRuns")
+        with mock.patch.object(github_bus, "gh_json", side_effect=[observation, github_bus.GitHubBusError("unavailable")]):
+            result = github_bus.candidate_pr_observation("example/repo", 1916)
+        self.assertEqual(github_bus.candidate_ci_status(result)[0], "running")
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class PreMergeIntegrationGateTests(unittest.TestCase):
+    """A candidate's green CI describes its own head, not where it will land.
+
+    On 2026-08-17 #1461 and #1462 shared no changed file, each merged green 45
+    seconds apart, and together broke dev: one's new test called a function
+    whose contract the other had changed. Replayed against this gate, the
+    candidate is refused with the exact FileNotFoundError that broke dev, while
+    a healthy candidate on current dev still reports `Ran 629 tests ... OK`.
+    """
+
+    def _task(self) -> dict:
+        return {
+            "id": "T-1",
+            "status": "integrating",
+            "candidate_sha": "abc123",
+            "reviewed_sha": "abc123",
+            "ci_sha": "abc123",
+            "ci_status": "success",
+        }
+
+    def _run(self, integrates: tuple[bool, str]):
+        config = {"paths": {"activity_log": "/dev/null"}, "github_bus": {"repo": "o/r", "auto_merge": {"enabled": True}}}
+        status = {"tasks": [self._task()]}
+        bus_state = {"tasks": {}}
+        with mock.patch.object(github_bus, "integrates_cleanly_with_dev", return_value=integrates), \
+             mock.patch.object(github_bus, "candidate_pr_for_task", return_value=7), \
+             mock.patch.object(github_bus, "candidate_pr_observation", return_value={"headRefOid": "abc123"}), \
+             mock.patch.object(github_bus, "write_activity_log") as log, \
+             mock.patch.object(github_bus, "run_gh") as run_gh:
+            github_bus.request_candidate_auto_merge(config, bus_state, status, "o/r")
+        return run_gh, log, bus_state
+
+    def test_a_candidate_that_breaks_dev_is_not_merged(self) -> None:
+        run_gh, log, _ = self._run((False, "orchestrator suite fails on top of origin/dev"))
+
+        run_gh.assert_not_called()
+        kinds = [c.args[1].get("type") for c in log.call_args_list]
+        self.assertIn("candidate_premerge_check_failed", kinds)
+
+    def test_a_healthy_candidate_still_merges(self) -> None:
+        run_gh, _, _ = self._run((True, "Ran 629 tests in 13.9s on top of origin/dev"))
+
+        self.assertEqual(run_gh.call_args.args[0][:2], ["pr", "merge"])
+
+    def test_a_blocked_candidate_is_reported_once_not_every_tick(self) -> None:
+        config = {"paths": {"activity_log": "/dev/null"}, "github_bus": {"repo": "o/r", "auto_merge": {"enabled": True}}}
+        status = {"tasks": [self._task()]}
+        bus_state = {"tasks": {}}
+        with mock.patch.object(github_bus, "integrates_cleanly_with_dev", return_value=(False, "nope")), \
+             mock.patch.object(github_bus, "candidate_pr_for_task", return_value=7), \
+             mock.patch.object(github_bus, "candidate_pr_observation", return_value={"headRefOid": "abc123"}), \
+             mock.patch.object(github_bus, "write_activity_log") as log, \
+             mock.patch.object(github_bus, "run_gh"):
+            for _ in range(4):
+                github_bus.request_candidate_auto_merge(config, bus_state, status, "o/r")
+
+        failures = [c for c in log.call_args_list
+                    if c.args[1].get("type") == "candidate_premerge_check_failed"]
+        self.assertEqual(len(failures), 1, "a stuck candidate logged on every tick")
+
+    def test_auto_merge_refuses_a_pr_head_that_drifted_after_review(self) -> None:
+        config = {"github_bus": {"repo": "o/r", "auto_merge": {"enabled": True}}}
+        with (
+            mock.patch.object(github_bus, "candidate_pr_for_task", return_value=7),
+            mock.patch.object(github_bus, "candidate_pr_observation", return_value={"headRefOid": "later-wip"}),
+            mock.patch.object(github_bus, "integrates_cleanly_with_dev") as integrates,
+            mock.patch.object(github_bus, "write_activity_log") as log,
+            mock.patch.object(github_bus, "run_gh") as run_gh,
+        ):
+            changed = github_bus.request_candidate_auto_merge(
+                config, {"tasks": {}}, {"tasks": [self._task()]}, "o/r"
+            )
+
+        self.assertFalse(changed)
+        integrates.assert_not_called()
+        run_gh.assert_not_called()
+        self.assertEqual(log.call_args.args[1]["type"], "candidate_auto_merge_deferred")
+
+    def test_the_gate_abstains_when_it_cannot_run(self) -> None:
+        """A gate must never be the reason something else fails."""
+        allowed, detail = github_bus.integrates_cleanly_with_dev({}, "abc123")
+
+        self.assertTrue(allowed)
+        self.assertIn("skipped", detail)
+
+
+class RealGitPreMergeGateTests(unittest.TestCase):
+    """No-mock regression coverage for `integrates_cleanly_with_dev`.
+
+    On 2026-09-28 the gate's own internal `git merge --no-edit` ran this
+    repo's commit-msg hook. The auto-generated merge message ("Merge <sha>
+    into HEAD") has no Task-ID trailer, so husky rejected it, and the gate
+    read that hook rejection back as "candidate does not merge cleanly" --
+    a false conflict on a candidate that never touched a conflicting line.
+    These tests build a real repo with a real trailer-enforcing commit-msg
+    hook and drive the gate against it, asserting on its actual return
+    value rather than a mocked one.
+    """
+
+    def _run_git(self, cwd: Path, *args: str) -> None:
+        result = subprocess.run(
+            ["git", *args], cwd=str(cwd), capture_output=True, text=True, timeout=30
+        )
+        self.assertEqual(result.returncode, 0, f"git {args} failed: {result.stderr}")
+
+    def _init_repo(self, repo_root: Path) -> None:
+        self._run_git(repo_root, "init", "-q", "-b", "dev")
+        self._run_git(repo_root, "config", "user.email", "test@example.com")
+        self._run_git(repo_root, "config", "user.name", "Test")
+        # The gate runs `python3 -m unittest discover` inside this path; it
+        # needs at least one passing test or discovery itself exits nonzero
+        # ("NO TESTS RAN"), which would masquerade as a broken candidate.
+        orch_dir = repo_root / "tools" / "development-orchestrator"
+        orch_dir.mkdir(parents=True)
+        (orch_dir / "test_placeholder.py").write_text(
+            "import unittest\n\n"
+            "class PlaceholderTest(unittest.TestCase):\n"
+            "    def test_true(self) -> None:\n"
+            "        self.assertTrue(True)\n"
+        )
+        self._commit(repo_root, "base")
+
+    def _install_trailer_hook(self, repo_root: Path) -> None:
+        # Mirrors this repo's real husky commit-msg gate: any commit message
+        # missing a `Task-ID:` trailer is rejected.
+        hook = repo_root / ".git" / "hooks" / "commit-msg"
+        hook.write_text("#!/bin/sh\ngrep -q '^Task-ID:' \"$1\" || exit 1\n")
+        hook.chmod(0o755)
+
+    def _commit(self, repo_root: Path, message: str) -> str:
+        self._run_git(repo_root, "add", "-A")
+        result = subprocess.run(
+            ["git", "commit", "-q", "--no-verify", "-m", message],
+            cwd=str(repo_root), capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, f"commit failed: {result.stderr}")
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(repo_root), capture_output=True, text=True, timeout=30,
+        ).stdout.strip()
+
+    def _write(self, repo_root: Path, relpath: str, content: str) -> None:
+        target = repo_root / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+
+    def _config(self, repo_root: Path) -> dict:
+        return {"paths": {"status_file": str(repo_root / "status.json")}}
+
+    def test_hook_rejected_merge_message_is_not_reported_as_a_conflict(self) -> None:
+        """dev has advanced since the candidate branched: a real merge commit
+        is required, its auto-generated message has no trailer, and the
+        commit-msg hook would reject it -- but this is not a conflict."""
+        with tempfile.TemporaryDirectory(prefix="premerge-nohook-") as tmp:
+            repo_root = Path(tmp)
+            self._init_repo(repo_root)
+            self._install_trailer_hook(repo_root)
+
+            self._run_git(repo_root, "checkout", "-q", "-b", "candidate")
+            self._write(repo_root, "candidate.txt", "candidate change\n")
+            candidate_sha = self._commit(repo_root, "candidate change\n\nTask-ID: X\n")
+
+            self._run_git(repo_root, "checkout", "-q", "dev")
+            self._write(repo_root, "dev.txt", "dev advances\n")
+            self._commit(repo_root, "dev advances\n\nTask-ID: X\n")
+
+            allowed, detail = github_bus.integrates_cleanly_with_dev(
+                self._config(repo_root), candidate_sha, integration_ref="dev"
+            )
+
+        self.assertTrue(allowed, detail)
+
+    def test_a_real_conflict_is_still_reported(self) -> None:
+        """Same hook, but the candidate and dev now edit the same line: this
+        must still be refused, so the fix must not have silenced conflict
+        detection along with the hook."""
+        with tempfile.TemporaryDirectory(prefix="premerge-conflict-") as tmp:
+            repo_root = Path(tmp)
+            self._init_repo(repo_root)
+            self._write(repo_root, "shared.txt", "base\n")
+            self._commit(repo_root, "shared base\n\nTask-ID: X\n")
+            self._install_trailer_hook(repo_root)
+
+            self._run_git(repo_root, "checkout", "-q", "-b", "candidate")
+            self._write(repo_root, "shared.txt", "candidate change\n")
+            candidate_sha = self._commit(repo_root, "candidate change\n\nTask-ID: X\n")
+
+            self._run_git(repo_root, "checkout", "-q", "dev")
+            self._write(repo_root, "shared.txt", "dev change\n")
+            self._commit(repo_root, "dev change\n\nTask-ID: X\n")
+
+            allowed, detail = github_bus.integrates_cleanly_with_dev(
+                self._config(repo_root), candidate_sha, integration_ref="dev"
+            )
+
+        self.assertFalse(allowed, detail)
+        self.assertIn("does not merge", detail)

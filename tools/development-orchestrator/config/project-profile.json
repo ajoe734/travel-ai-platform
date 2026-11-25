@@ -1,0 +1,36 @@
+{
+  "project": "travel-ai-platform",
+  "execution_mode": "supervisor_managed_execution",
+  "sprint": "2026-11-first-round-eng-01-12",
+  "objective": "Deliver the first-round engineering backlog ENG-01–ENG-12 of the Travel AI merchant assistant against the SA/SD baseline, with owner/reviewer lanes on different LLMs.",
+  "seed_design_files": [
+    "CANONICAL_DOCUMENT_MAP.md",
+    "SUPERVISOR_OPERATING_MODEL.md",
+    "docs/collaboration/herdr-handoff.md",
+    "docs/collaboration/backlog.md"
+  ],
+  "discussion_workspace": "docs/collaboration/consensus",
+  "canonical_document_layers": {
+    "L0 Collaboration": [
+      "AI_COLLABORATION_GUIDE.md",
+      "ai-status.json",
+      "AGENTS.md"
+    ],
+    "L1 Product Truth": [
+      "docs/project/current-decisions.md",
+      "docs/README.md",
+      "docs/sa/README.md",
+      "docs/requirements/README.md"
+    ],
+    "L1.5 Accepted System Design Decisions": [
+      "docs/sd/README.md",
+      "docs/sd/sa-v1-gaps.md",
+      "docs/adr/"
+    ],
+    "L2 Execution Rules": [
+      "docs/collaboration/herdr-handoff.md",
+      "docs/collaboration/backlog.md",
+      "specs/README.md"
+    ]
+  }
+}

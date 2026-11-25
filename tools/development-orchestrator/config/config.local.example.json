@@ -1,0 +1,48 @@
+{
+  // Local-only overrides for this machine.
+  // Copy to `.orchestrator/config.local.json` if you want a fresh personal override file.
+  "supervisor": {
+    // Refresh provider capabilities on each supervisor loop so dashboard state updates
+    // automatically after local CLI authentication changes.
+    "auto_refresh_provider_capabilities": true
+  },
+  "providers": {
+    "codex": {
+      "codex": {
+        // Keep the Codex worker lane off the interactive ChatGPT extension home.
+        // Leave chatbox / interactive usage on ~/.codex and give workers a clearly
+        // named CODEX_HOME instead.
+        "config_home": "~/.codex-worker"
+      }
+    },
+    "codex2": {
+      "codex": {
+        // Keep the second Codex worker lane on its own worker-named home.
+        // This can be the same OpenAI account as chatbox/codex if you only need
+        // token-file isolation, or a second account if you also want separate quota.
+        "config_home": "~/.codex2-worker"
+      }
+    },
+    "claude2": {
+      "runtime": {
+        // Keep Claude2 on a separate account/quota from the primary Claude lane.
+        "config_home": "~/.claude2-home"
+      }
+    },
+    "gemini2": {
+      "gemini": {
+        // Keep Gemini2 on a separate account/quota from the primary Gemini lane.
+        "config_home": "~/.gemini2-home",
+        // Workspace/school accounts need a Google Cloud project for Gemini Code Assist.
+        "env": {
+          "GEMINI_CLI_TRUST_WORKSPACE": "true",
+          "GOOGLE_GENAI_USE_GCA": "true",
+          "GOOGLE_CLOUD_PROJECT": "YOUR_WORKSPACE_GCA_PROJECT_ID",
+          "GOOGLE_CLOUD_PROJECT_ID": "YOUR_WORKSPACE_GCA_PROJECT_ID",
+          "GOOGLE_CLOUD_LOCATION": "us-central1"
+        },
+        "model": "gemini-2.5-flash-lite"
+      }
+    }
+  }
+}

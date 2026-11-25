@@ -1,0 +1,165 @@
+{
+  "tasks": [
+    {
+      "id": "ENG-01",
+      "title": "ENG-01 固定跨版本領域與契約",
+      "owner": "Claude",
+      "reviewer": "Codex",
+      "phase": "First round",
+      "depends_on": [],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-01",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-01 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。"
+    },
+    {
+      "id": "ENG-02",
+      "title": "ENG-02 可執行資料庫基線與多租戶約束",
+      "owner": "Codex2",
+      "reviewer": "Claude2",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-01"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-02",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-02 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。"
+    },
+    {
+      "id": "ENG-03",
+      "title": "ENG-03 授權、決策版本與撤回",
+      "owner": "Claude2",
+      "reviewer": "Codex2",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-01"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-03",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-03 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。 持久化部分待 ENG-02 合併後再接上。"
+    },
+    {
+      "id": "ENG-04",
+      "title": "ENG-04 供應商中立連接器與三種 mock",
+      "owner": "Codex",
+      "reviewer": "Claude",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-01"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-04",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-04 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。"
+    },
+    {
+      "id": "ENG-05",
+      "title": "ENG-05 第一條接單耐久流程",
+      "owner": "Pi",
+      "reviewer": "Claude",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-02",
+        "ENG-03",
+        "ENG-04"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-05",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-05 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。"
+    },
+    {
+      "id": "ENG-06",
+      "title": "ENG-06 商家工作台接真實工作狀態",
+      "owner": "Claude",
+      "reviewer": "Codex",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-01"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-06",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-06 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。 整合驗收待 ENG-05。"
+    },
+    {
+      "id": "ENG-07",
+      "title": "ENG-07 退款、抵用額度與客訴收尾",
+      "owner": "Codex2",
+      "reviewer": "Claude2",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-02",
+        "ENG-03",
+        "ENG-04",
+        "ENG-05"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-07",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-07 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。"
+    },
+    {
+      "id": "ENG-08",
+      "title": "ENG-08 服務版本與多渠道發布",
+      "owner": "Claude2",
+      "reviewer": "Codex2",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-03",
+        "ENG-04",
+        "ENG-05"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-08",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-08 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。"
+    },
+    {
+      "id": "ENG-09",
+      "title": "ENG-09 部署、營運與驗收交付",
+      "owner": "Codex",
+      "reviewer": "Claude",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-05",
+        "ENG-06",
+        "ENG-07",
+        "ENG-08"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-09",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-09 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。"
+    },
+    {
+      "id": "ENG-10",
+      "title": "ENG-10 語音、電話與多媒體接續",
+      "owner": "Pi",
+      "reviewer": "Claude",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-01",
+        "ENG-03",
+        "ENG-05"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-10",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-10 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。"
+    },
+    {
+      "id": "ENG-11",
+      "title": "ENG-11 經營洞察、商家討論與素材權利",
+      "owner": "Claude",
+      "reviewer": "Codex",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-02",
+        "ENG-03",
+        "ENG-05",
+        "ENG-08"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-11",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-11 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。"
+    },
+    {
+      "id": "ENG-12",
+      "title": "ENG-12 企業計費、渠道結算與完整成本回流",
+      "owner": "Codex2",
+      "reviewer": "Claude2",
+      "phase": "First round",
+      "depends_on": [
+        "ENG-02",
+        "ENG-05",
+        "ENG-07",
+        "ENG-08",
+        "ENG-10"
+      ],
+      "task_spec_ref": "docs/collaboration/backlog.md#eng-12",
+      "summary_zh": "依 docs/collaboration/backlog.md 的 ENG-12 產出與驗收、docs/collaboration/herdr-handoff.md 與 SA/SD 實作。"
+    }
+  ]
+}

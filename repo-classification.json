@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "description": "Ownership and deployment boundary for 旅行平台 Travel AI Platform and its development tooling.",
+  "unmatchedPolicy": "warn",
+  "lifecyclePolicy": {
+    "developmentSidecar": {
+      "removableAfter": "development_complete",
+      "classifications": [
+        "development_tool",
+        "development_record",
+        "test_only"
+      ],
+      "removalPaths": [
+        "tools",
+        ".orchestrator",
+        ".artifacts"
+      ],
+      "requireProductIndependence": true,
+      "description": "Development tooling must remain removable without changing product logic."
+    }
+  },
+  "classifications": {
+    "product_runtime": {
+      "description": "Shipped product code.",
+      "productionAllowed": true
+    },
+    "product_operations": {
+      "description": "Deployment, database and environment operations.",
+      "productionAllowed": false
+    },
+    "development_tool": {
+      "description": "Agent orchestration and repository automation.",
+      "productionAllowed": false
+    },
+    "test_only": {
+      "description": "Tests, fixtures, mocks and CI.",
+      "productionAllowed": false
+    },
+    "documentation": {
+      "description": "Documentation.",
+      "productionAllowed": false
+    },
+    "product_non_active": {
+      "description": "Prototype or not-yet-active product source.",
+      "productionAllowed": false
+    },
+    "development_record": {
+      "description": "Task evidence and generated records.",
+      "productionAllowed": false
+    },
+    "repository_governance": {
+      "description": "Repository configuration and policy.",
+      "productionAllowed": false
+    }
+  },
+  "rules": [
+    {
+      "id": "prototypes",
+      "pattern": "^prototypes/",
+      "classification": "product_non_active",
+      "status": "active"
+    },
+    {
+      "id": "specs",
+      "pattern": "^specs/",
+      "classification": "documentation",
+      "status": "active"
+    },
+    {
+      "id": "tests",
+      "pattern": "^tests/|^requirements-[^/]+\\.txt$",
+      "classification": "test_only",
+      "status": "active"
+    },
+    {
+      "id": "scripts",
+      "pattern": "^scripts/",
+      "classification": "development_tool",
+      "status": "active"
+    },
+    {
+      "id": "orchestrator",
+      "pattern": "^tools/development-orchestrator/",
+      "classification": "development_tool",
+      "status": "active"
+    },
+    {
+      "id": "orchestrator-docs",
+      "pattern": "^(?:AI_COLLABORATION_GUIDE|LLM_ONBOARDING|ORCHESTRATOR_QUICKSTART|SUPERVISOR_OPERATING_MODEL|CANONICAL_DOCUMENT_MAP)\\.md$",
+      "classification": "repository_governance",
+      "status": "active"
+    },
+    {
+      "id": "repo-governance",
+      "pattern": "^(?:\\.github/|\\.gitignore$|\\.gitattributes$|AGENTS\\.md$|README\\.md$|repo-classification\\.json$|\\.env\\.example$)",
+      "classification": "repository_governance",
+      "status": "active"
+    },
+    {
+      "id": "docs",
+      "pattern": "^docs/",
+      "classification": "documentation",
+      "status": "active"
+    }
+  ],
+  "activeDeployables": [],
+  "dependencyPolicy": {},
+  "dockerPolicy": {}
+}
