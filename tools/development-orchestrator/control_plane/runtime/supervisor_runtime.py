@@ -7502,7 +7502,12 @@ def _approval_is_routine_safe(approval: dict[str, Any]) -> bool:
     command = str(tool_input.get("command") or tool_input.get("cmd") or "").strip()
     if not command:
         return False
-    tokens = shlex.split(command)
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        # Unbalanced quoting cannot be judged here; leave the request for a person
+        # instead of failing every supervisor tick.
+        return False
     if not tokens:
         return False
     normalized = " ".join(tokens)
