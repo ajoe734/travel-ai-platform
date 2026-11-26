@@ -16,3 +16,8 @@ DecisionRequest API 契約、canonical payload hash 與批准／拒絕／過期�
 程式本體在 [`services/authorization/`](../services/authorization/)；可用
 `python3 -m unittest tests.authorization_service_test -v` 驗證，逐項驗收見
 [authorization/acceptance-trace.md](authorization/acceptance-trace.md)。
+
+ENG-04 的實際產出在 [connector/](connector/README.md)：供應商中立的 typed SDK（`connectors/`）與三個固定行為的
+mock connector，對照 [SD connector-result-and-reconciliation.md](../docs/sd/connector-result-and-reconciliation.md)。
+可用 `python3 -m unittest tests.connector_contract_test -v` 驗證；驗收逐項對照見
+[connector/acceptance-trace.md](connector/acceptance-trace.md)。
