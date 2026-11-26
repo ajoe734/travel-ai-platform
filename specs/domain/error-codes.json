@@ -92,6 +92,38 @@
       "source": "SD authorization-and-approval.md §5/§8 SD-A-06"
     },
     {
+      "code": "UNVERIFIED_APPROVAL_REJECTED",
+      "http_status": 403,
+      "retryable_default": false,
+      "meaning": "核准命令沒有附上受信任 UI 確認端點或語音確認服務簽發的 nonce；模型文字或前端旗標自稱 accepted=true 不構成批准證據。",
+      "source": "SD authorization-and-approval.md §1/§8 SD-A-01",
+      "x_added_by": "ENG-03"
+    },
+    {
+      "code": "ACTOR_ROLE_MISMATCH",
+      "http_status": 403,
+      "retryable_default": false,
+      "meaning": "核准／拒絕決策的 actor 角色與 DecisionRequest.requested_role 不符。",
+      "source": "SD authorization-and-approval.md §4",
+      "x_added_by": "ENG-03"
+    },
+    {
+      "code": "AUTHORIZATION_REVOKED",
+      "http_status": 409,
+      "retryable_default": false,
+      "meaning": "執行前再檢查發現此 ExecutionAuthorization 依據的批准或政策已被撤回；未發出的新動作必須停止。",
+      "source": "SD authorization-and-approval.md §6/§8 SD-A-07/08",
+      "x_added_by": "ENG-03"
+    },
+    {
+      "code": "REVOCATION_NOT_PERMITTED",
+      "http_status": 403,
+      "retryable_default": false,
+      "meaning": "呼叫者沒有撤回此批准的權限（非核發租戶或角色不允許撤回）。",
+      "source": "SD authorization-and-approval.md §4 命令表",
+      "x_added_by": "ENG-03"
+    },
+    {
       "code": "INVALID_SERVICE_REVISION_FIELD",
       "http_status": 422,
       "retryable_default": false,
