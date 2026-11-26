@@ -64,6 +64,22 @@ Local documentation links checked: 196
 JavaScript scripts checked: 4
 ```
 
+## 候選同步紀錄：與 dev 合併（ENG-02 落地後）
+
+PR #8 於 2026-11-26 交接審查後，`dev` 併入 ENG-02（#7，`06de29d`：可執行 DB baseline、repository
+層、多租戶 RLS），導致 `claude/eng-06`（原候選 `d3aa041`）與 `origin/dev` 產生衝突
+（`mergeStateStatus=DIRTY`，`mergeable=CONFLICTING`）。無任何 review 已核准此候選
+（`reviewDecision` 為空、`reviews: []`），故依指引在本 task worktree 以
+`git merge origin/dev` 同步，非 rebase/force-push。
+
+| 項目 | 內容 |
+|---|---|
+| 衝突檔案 | `specs/domain/error-codes.json`（唯一衝突）：ENG-06 與 ENG-02 各自在同一陣列尾端新增錯誤碼。解法：兩邊都保留——ENG-06 的 `INVALID_SERVICE_REVISION_FIELD`／`MISSING_REQUIRED_INPUT`／`DECISION_NOT_PENDING`／`DECISION_OPTION_UNKNOWN`／`WORK_NOT_FOUND`／`WORK_PHASE_MISMATCH`，加上 ENG-02 的 `IMMUTABLE_RECORD`。合併後 19 碼無重複（`python3 -c` 核對 `len(codes)==len(set(codes))==19`）。 |
+| 非衝突變更 | `db/`、`tests/db/`、`.github/workflows/repository-validation.yml`（新增 `db-migration-lifecycle` job）為 ENG-02 新增，與 `services/workbench/`、`prototypes/merchant-assistant/workbench/` 無交集；ENG-06 的 in-memory `services/workbench/repository.py` 未被要求改接 ENG-02 的 `db/repository/`（整合驗收仍待 ENG-05，見下方「未驗項」）。 |
+| 新 candidate SHA | `c67b4a2`（merge commit，base 為 `d3aa041` + `origin/dev@06de29d`），已 push 到 `origin/claude/eng-06`（非 force push） |
+| 回歸結果 | 下列「交叉核對命令」已在合併後的工作樹重跑：22/22、6/6、54/54、18/18 不變；`validate_repository.py` 仍 passed，`Local documentation links checked` 由 196 增至 211（dev 新增 `db/README.md` 等文件連結，非 ENG-06 範圍變動） |
+| 未執行 | `.github/workflows/repository-validation.yml` 新增的 `db-migration-lifecycle` job 需要 PostgreSQL service container；本 VM 限制不可啟動 DB/Docker，僅能交由 hosted CI 執行並讀結果，不在本機宣稱通過 |
+
 ## 未驗項總覽（不重複上表逐項備註）
 
 - 沒有啟動 PostgreSQL／Docker／瀏覽器（VM 限制）；`services/workbench/repository.py` 的持久層語意與
