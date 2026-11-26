@@ -100,6 +100,36 @@ These checks do not verify a production application or external integration.
 `ACTOR_ROLE_MISMATCH`／`AUTHORIZATION_REVOKED`／`REVOCATION_NOT_PERMITTED`，皆標 `x_added_by: ENG-03`）
 未破壞 ENG-01 既有的 registry 一致性檢查與連結完整性檢查。
 
+## dev 同步（candidate 11d8f77 → ddd92c5）
+
+PR #6 CI 回報 `mergeable: CONFLICTING`（dev 已併入 ENG-04 `01559dd`，`specs/README.md`
+兩邊都新增小節，純附加式衝突，未觸及任何程式邏輯）。候選尚未進入 review 鎖定狀態，依
+AI_COLLABORATION_GUIDE.md §0.6/§0.7 在本 task worktree `git merge origin/dev` 解衝突、
+保留雙方新增內容、重新驗證後以新 SHA 重交：
+
+```bash
+$ python3 -m unittest tests.authorization_service_test tests.domain_contract_test tests.connector_contract_test -v
+...
+Ran 116 tests in 0.222s
+
+OK
+```
+
+```bash
+$ python3 scripts/validate_repository.py
+Repository checks: passed
+Original files verified: 12
+Local documentation links checked: 214
+JavaScript scripts checked: 3
+```
+
+`authorization_service_test`（62/62，含 `Round1RetrofitTests` 23/23）、`domain_contract_test`
+（13/13）、`connector_contract_test`（41/41，ENG-04 帶入）均通過；連結檢查 203→214 是
+ENG-04 新增 `specs/connector/*` 的連結，非本次改動。merge commit `ddd92c5` 未修改
+`services/authorization/`、`tests/authorization_service_test.py` 或
+`specs/authorization/{README,api-contract,acceptance-trace}.md` 的任何既有內容（僅
+`specs/README.md` 的附加式解衝突），Round 1 的 F1-F8 修正與回歸案例原樣保留。
+
 ## 未驗項總表（非逐項重複，彙整）
 
 - 沒有啟動 PostgreSQL；所有「原子」行為（UNIQUE 約束、AuthorizationUse 唯一性、撤回/dispatch 先後序）
