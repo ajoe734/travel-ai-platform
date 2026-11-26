@@ -366,6 +366,13 @@
       "adapter": "pi",
       "wake_template": "tools/development-orchestrator/templates/wakeup.txt",
       "file_inbox_path": ".llm-inbox/pi.md"
+    },
+    "antigravity": {
+      "display_name": "Antigravity",
+      "provider": "antigravity",
+      "adapter": "antigravity",
+      "wake_template": "tools/development-orchestrator/templates/wakeup.txt",
+      "file_inbox_path": ".llm-inbox/antigravity.md"
     }
   },
   "providers": {
@@ -578,6 +585,28 @@
         "default": null,
         "supported": []
       }
+    },
+    "antigravity": {
+      "delivery_mode": "antigravity",
+      "account": "antigravity",
+      "runtime": {
+        "env": {
+          "AGY_CLI_DISABLE_AUTO_UPDATE": "true"
+        }
+      },
+      "antigravity": {
+        "cli": "agy",
+        "include_directories": true,
+        "output_format": "stream-json",
+        "print_timeout": "2h"
+      },
+      "retry": {
+        "max_attempts": 3
+      },
+      "auth_probe": {
+        "probe_timeout_seconds": 120,
+        "failed_probe_interval_seconds": 60
+      }
     }
   },
   "branch_strategy": {
@@ -634,7 +663,8 @@
       "codex": 3,
       "codex2": 3,
       "pi": 2,
-      "gemini": 2
+      "gemini": 2,
+      "antigravity": 2
     },
     "max_dispatches_per_tick": 4
   }

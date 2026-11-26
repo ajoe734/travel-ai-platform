@@ -101,6 +101,11 @@ KNOWN_AGENTS = {
         "default_branch": "feat/pi-parallel-worker",
         "target_workload": 15,
     },
+    "Antigravity": {
+        "capability_lane": ["spec-review", "acceptance", "api-implementation", "critique"],
+        "default_branch": "feat/antigravity-review",
+        "target_workload": 15,
+    },
 }
 
 AGENT_ALIASES = {
@@ -113,6 +118,8 @@ AGENT_ALIASES = {
     "gemini 2": "Gemini2",
     "codex2": "Codex2",
     "codex 2": "Codex2",
+    "antigravity": "Antigravity",
+    "agy": "Antigravity",
 }
 
 STATUS_LABELS = {
