@@ -122,17 +122,19 @@ def status(conn: psycopg.Connection, migrations: list[Migration]) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--database-url", default=os.environ.get("DATABASE_URL"))
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--database-url", default=os.environ.get("DATABASE_URL"))
+
+    parser = argparse.ArgumentParser(description=__doc__, parents=[common])
     sub = parser.add_subparsers(dest="command", required=True)
 
-    up_parser = sub.add_parser("upgrade")
+    up_parser = sub.add_parser("upgrade", parents=[common])
     up_parser.add_argument("--to", default=None, help="Stop after this version (inclusive).")
 
-    down_parser = sub.add_parser("downgrade")
+    down_parser = sub.add_parser("downgrade", parents=[common])
     down_parser.add_argument("--to", required=True, help="Target version to downgrade to (exclusive), or 0 for a full teardown.")
 
-    sub.add_parser("status")
+    sub.add_parser("status", parents=[common])
 
     args = parser.parse_args()
 
