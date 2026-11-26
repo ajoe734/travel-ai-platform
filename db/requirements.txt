@@ -1,0 +1,5 @@
+# ENG-02 database layer dependencies. Installed in CI (network available
+# there); this VM's sandbox has no outbound network, so these are never
+# pip-installed locally -- see db/README.md "本機無法執行的部分".
+psycopg[binary]==3.2.3
+pytest==8.3.4

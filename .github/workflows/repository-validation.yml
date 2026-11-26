@@ -19,3 +19,89 @@ jobs:
         run: python3 scripts/validate_repository.py
       - name: Check prototype state transitions in Node VM
         run: node tests/prototype-regression.cjs
+
+  db-migration-lifecycle:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: eng02-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:eng02-ci-only@localhost:5432/postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, verified 2026-11-22
+        with:
+          persist-credentials: false
+      - name: Install db/ dependencies
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          .venv/bin/pip install -r db/requirements.txt
+      - name: backlog ENG-02 acceptance -- empty-db upgrade, rebuild, rollback
+        run: |
+          set -euo pipefail
+
+          assert_applied_count () {
+            expected="$1"
+            actual=$(python3 -c "import os, psycopg; print(psycopg.connect(os.environ['DATABASE_URL']).execute('SELECT count(*) FROM schema_migrations').fetchone()[0])")
+            if [ "$actual" != "$expected" ]; then
+              echo "expected $expected applied migrations, got $actual" >&2
+              exit 1
+            fi
+          }
+
+          echo "::group::upgrade from empty database"
+          python3 db/migrate.py upgrade
+          python3 db/migrate.py status
+          assert_applied_count 5
+          echo "::endgroup::"
+
+          echo "::group::full rollback"
+          python3 db/migrate.py downgrade --to 0
+          python3 db/migrate.py status
+          assert_applied_count 0
+          echo "::endgroup::"
+
+          echo "::group::rebuild"
+          python3 db/migrate.py upgrade
+          python3 db/migrate.py status
+          assert_applied_count 5
+          echo "::endgroup::"
+
+  db-repository-tests:
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: eng02-ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      ENG02_ADMIN_DATABASE_URL: postgresql://postgres:eng02-ci-only@localhost:5432/postgres
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, verified 2026-11-22
+        with:
+          persist-credentials: false
+      - name: Install db/ dependencies
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          .venv/bin/pip install -r db/requirements.txt
+      - name: backlog ENG-02 acceptance -- tenant isolation, cross-tenant FK, refund concurrency, idempotency, approval immutability
+        run: pytest tests/db -v
