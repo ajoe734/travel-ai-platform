@@ -118,7 +118,13 @@ CREATE TABLE inbox_event (
                           )),
     processed_at         timestamptz,
     PRIMARY KEY (tenant_id, id),
-    UNIQUE (tenant_id, connector_account_id, environment, producer, source_event_id)
+    -- NULLS NOT DISTINCT: connector_account_id/environment are nullable,
+    -- and record_inbound_event's dedupe check (outbox_inbox_repository.py)
+    -- treats two NULLs as matching via IS NOT DISTINCT FROM. A plain UNIQUE
+    -- constraint treats NULLs as distinct, so it would not actually back
+    -- that dedupe check with a real constraint for rows where either column
+    -- is NULL.
+    UNIQUE NULLS NOT DISTINCT (tenant_id, connector_account_id, environment, producer, source_event_id)
 );
 
 CREATE FUNCTION inbox_event_guard_mutation() RETURNS trigger AS $$

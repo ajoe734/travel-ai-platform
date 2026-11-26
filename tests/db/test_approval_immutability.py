@@ -60,31 +60,52 @@ def _approve_a_decision(conn, tenant_id, work_id):
     return approval_id
 
 
-def test_approval_record_cannot_be_updated(conn, tenant_a, case_factory, work_factory):
+def test_approval_record_cannot_be_updated(conn, admin_database_url, tenant_a, case_factory, work_factory):
     case_id = case_factory(tenant_a)
     work_id = work_factory(tenant_a, case_id)
     approval_id = _approve_a_decision(conn, tenant_a, work_id)
 
-    with pytest.raises(psycopg.Error) as excinfo:
+    # Layer 1: app_role (0003 grants it only SELECT, INSERT on
+    # approval_record) is rejected by Postgres's own privilege check before
+    # the forbid_update_delete() trigger ever runs.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
         with repo_db.tenant_transaction(conn, tenant_a):
             conn.execute(
                 "UPDATE approval_record SET approved_payload = %s WHERE tenant_id = %s AND id = %s",
                 (json.dumps({"id": "reject"}), tenant_a, approval_id),
             )
 
-    assert isinstance(translate_integrity_error(excinfo.value), ImmutableRecordViolation)
+    # Layer 2: the migration/admin role owns the table (so it has UPDATE and,
+    # being a superuser in this CI setup, also bypasses RLS) and still hits
+    # the forbid_update_delete() trigger itself.
+    with psycopg.connect(admin_database_url, autocommit=True) as admin_conn:
+        with pytest.raises(psycopg.Error) as excinfo:
+            admin_conn.execute(
+                "UPDATE approval_record SET approved_payload = %s WHERE tenant_id = %s AND id = %s",
+                (json.dumps({"id": "reject"}), tenant_a, approval_id),
+            )
+        assert isinstance(translate_integrity_error(excinfo.value), ImmutableRecordViolation)
 
 
-def test_approval_record_cannot_be_deleted(conn, tenant_a, case_factory, work_factory):
+def test_approval_record_cannot_be_deleted(conn, admin_database_url, tenant_a, case_factory, work_factory):
     case_id = case_factory(tenant_a)
     work_id = work_factory(tenant_a, case_id)
     approval_id = _approve_a_decision(conn, tenant_a, work_id)
 
-    with pytest.raises(psycopg.Error) as excinfo:
+    # Layer 1: same privilege check as the UPDATE case above.
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
         with repo_db.tenant_transaction(conn, tenant_a):
             conn.execute(
                 "DELETE FROM approval_record WHERE tenant_id = %s AND id = %s",
                 (tenant_a, approval_id),
             )
 
-    assert isinstance(translate_integrity_error(excinfo.value), ImmutableRecordViolation)
+    # Layer 2: the admin/owner role has DELETE and bypasses RLS, but the
+    # trigger still forbids it.
+    with psycopg.connect(admin_database_url, autocommit=True) as admin_conn:
+        with pytest.raises(psycopg.Error) as excinfo:
+            admin_conn.execute(
+                "DELETE FROM approval_record WHERE tenant_id = %s AND id = %s",
+                (tenant_a, approval_id),
+            )
+        assert isinstance(translate_integrity_error(excinfo.value), ImmutableRecordViolation)

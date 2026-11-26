@@ -2,22 +2,22 @@
 """ENG-02 test seed data.
 
 Loads a small, explicitly non-production dataset (two TEST-environment
-tenants, one Case/Work/ExecutionTask/DecisionRequest/ApprovalRecord/Order/
-Payment chain each) for manual exploration and for the "測試種子與非正式資料
-標記" backlog ENG-02 deliverable. Every tenant this script creates has
+tenants, one Case each) for manual exploration and for the "測試種子與非正式
+資料標記" backlog ENG-02 deliverable. Every tenant this script creates has
 environment='TEST' (see migrations/0001 tenant.environment CHECK); it must
-never be pointed at a tenant row with environment='PRODUCTION'.
+never be pointed at a tenant row with environment='PRODUCTION'. It does not
+seed the full Work/ExecutionTask/DecisionRequest/ApprovalRecord/Order/
+Payment chain -- tests/db/conftest.py's factories build that chain for the
+acceptance suite instead.
 
 Usage:
     DATABASE_URL=postgresql://... python3 db/seeds/load_fixtures.py
 """
 from __future__ import annotations
 
-import hashlib
 import os
 import sys
 import uuid
-from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -33,18 +33,11 @@ def fixture_id(label: str) -> str:
     return str(uuid.uuid5(FIXED_NAMESPACE, label))
 
 
-def sha256_hex(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def main() -> int:
     database_url = os.environ.get("DATABASE_URL")
     if not database_url:
         print("DATABASE_URL is required", file=sys.stderr)
         return 2
-
-    now = datetime.now(timezone.utc).isoformat()
-    later = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
 
     with psycopg.connect(database_url, autocommit=True) as admin_conn:
         for label in ("eng02-fixture-tenant-a", "eng02-fixture-tenant-b"):

@@ -48,7 +48,10 @@ CREATE UNIQUE INDEX decision_request_one_pending_per_id
 
 CREATE FUNCTION decision_request_guard_mutation() RETURNS trigger AS $$
 BEGIN
-    IF NEW.work_id IS DISTINCT FROM OLD.work_id
+    IF NEW.tenant_id IS DISTINCT FROM OLD.tenant_id
+       OR NEW.id IS DISTINCT FROM OLD.id
+       OR NEW.revision IS DISTINCT FROM OLD.revision
+       OR NEW.work_id IS DISTINCT FROM OLD.work_id
        OR NEW.decision_type IS DISTINCT FROM OLD.decision_type
        OR NEW.options IS DISTINCT FROM OLD.options
        OR NEW.display_payload IS DISTINCT FROM OLD.display_payload

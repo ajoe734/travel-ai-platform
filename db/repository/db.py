@@ -23,6 +23,13 @@ def connect(database_url: str) -> psycopg.Connection:
     """
     conn = psycopg.connect(database_url, autocommit=False)
     conn.execute("SET ROLE app_role")
+    # Without this commit, the implicit transaction SET ROLE opened stays
+    # open on return, so every later tenant_transaction() finds itself
+    # already inside a transaction and only opens a SAVEPOINT -- which
+    # RELEASEs, never COMMITs, on exit. Nothing written by the caller would
+    # ever become visible to other connections. Commit here so connect()
+    # hands back an IDLE session with app_role active.
+    conn.commit()
     return conn
 
 

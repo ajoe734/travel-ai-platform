@@ -62,9 +62,14 @@ def reserve_refund(
     ).fetchone()
     if existing is not None:
         row = dict(zip(_REFUND_COLUMNS, existing))
-        if row["amount_minor_units"] != amount_minor_units or row["currency"] != currency:
+        if (
+            str(row["payment_id"]) != str(payment_id)
+            or row["amount_minor_units"] != amount_minor_units
+            or row["currency"] != currency
+            or row["currency_scale_ref"] != currency_scale_ref
+        ):
             raise IdempotencyConflict(
-                f"business_key {business_key!r} already reserved with a different amount/currency"
+                f"business_key {business_key!r} already reserved against a different payment/amount/currency"
             )
         return row
 
@@ -72,11 +77,12 @@ def reserve_refund(
         """
         UPDATE payment
         SET reserved_amount_minor_units = reserved_amount_minor_units + %s
-        WHERE tenant_id = %s AND id = %s
+        WHERE tenant_id = %s AND id = %s AND currency = %s
+          AND %s > 0
           AND captured_amount_minor_units - refunded_amount_minor_units - reserved_amount_minor_units >= %s
         RETURNING id
         """,
-        (amount_minor_units, tenant_id, payment_id, amount_minor_units),
+        (amount_minor_units, tenant_id, payment_id, currency, amount_minor_units, amount_minor_units),
     ).fetchone()
     if reserved is None:
         raise InsufficientRefundBalance(
@@ -111,24 +117,32 @@ def mark_refund_succeeded(
     reserved to refunded (SD §4 state table), in one statement so the two
     counters never observably disagree.
     """
-    conn.execute(
-        """
-        UPDATE payment
-        SET reserved_amount_minor_units = reserved_amount_minor_units - r.amount_minor_units,
-            refunded_amount_minor_units = refunded_amount_minor_units + r.amount_minor_units
-        FROM refund r
-        WHERE payment.tenant_id = r.tenant_id AND payment.id = r.payment_id
-          AND r.tenant_id = %s AND r.id = %s
-        """,
-        (tenant_id, refund_id),
-    )
-    conn.execute(
+    # Transition the refund row first, guarded by its current state, and
+    # only move the payment's counters if this call actually performed the
+    # transition -- otherwise a retry/duplicate call (refund already
+    # SUCCEEDED) would move reserved -> refunded a second time with no
+    # corresponding reservation left to draw down.
+    transitioned = conn.execute(
         """
         UPDATE refund
         SET state = 'SUCCEEDED', provider_refund_id = %s, source_revision = %s, evidence = %s
-        WHERE tenant_id = %s AND id = %s AND state <> 'SUCCEEDED'
+        WHERE tenant_id = %s AND id = %s
+          AND state IN ('RESERVED', 'SUBMITTED', 'PENDING', 'UNKNOWN')
+        RETURNING payment_id, amount_minor_units
         """,
         (provider_refund_id, source_revision, json.dumps(evidence), tenant_id, refund_id),
+    ).fetchone()
+    if transitioned is None:
+        return
+    payment_id, amount_minor_units = transitioned
+    conn.execute(
+        """
+        UPDATE payment
+        SET reserved_amount_minor_units = reserved_amount_minor_units - %s,
+            refunded_amount_minor_units = refunded_amount_minor_units + %s
+        WHERE tenant_id = %s AND id = %s
+        """,
+        (amount_minor_units, amount_minor_units, tenant_id, payment_id),
     )
 
 
@@ -141,22 +155,26 @@ def release_refund_reservation(
     """
     if terminal_state not in ("FAILED", "CANCELLED"):
         raise ValueError("release_refund_reservation only accepts FAILED or CANCELLED")
-    conn.execute(
-        """
-        UPDATE payment
-        SET reserved_amount_minor_units = reserved_amount_minor_units - r.amount_minor_units
-        FROM refund r
-        WHERE payment.tenant_id = r.tenant_id AND payment.id = r.payment_id
-          AND r.tenant_id = %s AND r.id = %s
-          AND r.state IN ('RESERVED', 'SUBMITTED', 'PENDING')
-        """,
-        (tenant_id, refund_id),
-    )
-    conn.execute(
+    # Same pattern as mark_refund_succeeded: transition refund first, and
+    # only touch the payment's reserved counter if this call actually
+    # performed the transition.
+    transitioned = conn.execute(
         """
         UPDATE refund
         SET state = %s
         WHERE tenant_id = %s AND id = %s AND state IN ('RESERVED', 'SUBMITTED', 'PENDING')
+        RETURNING payment_id, amount_minor_units
         """,
         (terminal_state, tenant_id, refund_id),
+    ).fetchone()
+    if transitioned is None:
+        return
+    payment_id, amount_minor_units = transitioned
+    conn.execute(
+        """
+        UPDATE payment
+        SET reserved_amount_minor_units = reserved_amount_minor_units - %s
+        WHERE tenant_id = %s AND id = %s
+        """,
+        (amount_minor_units, tenant_id, payment_id),
     )

@@ -179,8 +179,12 @@ CREATE TABLE refund (
 -- SD credit-and-refund.md §3: UNIQUE(tenant_id, connector_account_id,
 -- environment, provider_refund_id) prevents importing the same externally
 -- observed refund twice.
+-- NULLS NOT DISTINCT: connector_account_id/environment are nullable; without
+-- it, two imported rows for the same provider_refund_id with both columns
+-- NULL would not violate this index (plain UNIQUE treats NULLs as distinct).
 CREATE UNIQUE INDEX refund_provider_dedupe
     ON refund (tenant_id, connector_account_id, environment, provider_refund_id)
+    NULLS NOT DISTINCT
     WHERE provider_refund_id IS NOT NULL;
 
 CREATE TRIGGER refund_set_updated_at
