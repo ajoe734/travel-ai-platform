@@ -132,6 +132,13 @@
       "retryable_default": false,
       "meaning": "命令假設的 Work 狀態（例如需要 WAITING_INPUT 才能補資料、需要 WAITING_DECISION 才能核准）與目前實際狀態不符。",
       "source": "work-execution-contract.md §3"
+    },
+    {
+      "code": "IMMUTABLE_RECORD",
+      "http_status": 500,
+      "retryable_default": false,
+      "meaning": "呼叫端試圖 UPDATE／DELETE append-only 物件（ApprovalRecord、ExecutionAuthorization、AuthorizationUse、ExecutionAttempt、CompletionEvidence、WorkPlan、WorkEvent 等）；正常流程不應觸發，出現代表呼叫端邏輯錯誤而非客戶端可重試的衝突。",
+      "source": "ADR 0003; specs/domain/relationships.md 不可變與 append-only 物件; ENG-02 db/migrations forbid_update_delete()"
     }
   ]
 }
