@@ -21,3 +21,9 @@ ENG-04 的實際產出在 [connector/](connector/README.md)：供應商中立的
 mock connector，對照 [SD connector-result-and-reconciliation.md](../docs/sd/connector-result-and-reconciliation.md)。
 可用 `python3 -m unittest tests.connector_contract_test -v` 驗證；驗收逐項對照見
 [connector/acceptance-trace.md](connector/acceptance-trace.md)。
+
+ENG-06 的實際產出在 [workbench/](workbench/README.md)：商家工作台服務層（`services/workbench/`）與取代
+UX 2.1 `localStorage`／`setTimeout` 假後端的前端雛形（`prototypes/merchant-assistant/workbench/`），直接
+建構在 ENG-01 的 Work／DecisionRequest／ExecutionTask 契約與 ENG-04 的連接器 mock 上。可用
+`python3 -m unittest tests.workbench_service_test -v` 與 `node tests/workbench_frontend_test.cjs` 驗證；
+驗收逐項對照見 [workbench/acceptance-trace.md](workbench/acceptance-trace.md)。

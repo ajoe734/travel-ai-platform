@@ -124,6 +124,48 @@
       "x_added_by": "ENG-03"
     },
     {
+      "code": "INVALID_SERVICE_REVISION_FIELD",
+      "http_status": 422,
+      "retryable_default": false,
+      "meaning": "商家提出的服務改版欄位（容量、價格、時長等）未通過 specs/workbench/service-revision.schema.json；前後端皆須拒絕，不得先放行到核准階段再擋。",
+      "source": "backlog.md#eng-06"
+    },
+    {
+      "code": "MISSING_REQUIRED_INPUT",
+      "http_status": 422,
+      "retryable_default": false,
+      "meaning": "Work 處於 WAITING_INPUT，但本次提交仍缺 missing_fields 列出的必要欄位（例如素材或用途確認）。",
+      "source": "backlog.md#eng-06; work-execution-contract.md §3"
+    },
+    {
+      "code": "DECISION_NOT_PENDING",
+      "http_status": 409,
+      "retryable_default": false,
+      "meaning": "DecisionRequest 已不是 PENDING（已核准／拒絕／過期／被取代），不可再次送出決定。",
+      "source": "authorization-and-approval.md §4"
+    },
+    {
+      "code": "DECISION_OPTION_UNKNOWN",
+      "http_status": 422,
+      "retryable_default": false,
+      "meaning": "selected_option_id 不在該 DecisionRequest.options 列表內。",
+      "source": "authorization-and-approval.md §1 (decision schema 的 selected option schema)"
+    },
+    {
+      "code": "WORK_NOT_FOUND",
+      "http_status": 404,
+      "retryable_default": false,
+      "meaning": "指定 tenant 下找不到該 Work／DecisionRequest；與跨租戶拒絕使用相同不洩漏存在與否的回應形狀。",
+      "source": "SA 08.3 存取與錯誤"
+    },
+    {
+      "code": "WORK_PHASE_MISMATCH",
+      "http_status": 409,
+      "retryable_default": false,
+      "meaning": "命令假設的 Work 狀態（例如需要 WAITING_INPUT 才能補資料、需要 WAITING_DECISION 才能核准）與目前實際狀態不符。",
+      "source": "work-execution-contract.md §3"
+    },
+    {
       "code": "IMMUTABLE_RECORD",
       "http_status": 500,
       "retryable_default": false,

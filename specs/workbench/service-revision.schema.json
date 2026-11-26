@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/workbench/v1/service-revision.schema.json",
+  "title": "ServiceRevisionProposal",
+  "description": "ENG-06 new contract. Source: backlog.md#eng-06 (商家工作清單、補資料、決策卡) and the UX 2.1 prototype's service-revision interaction (prototypes/merchant-assistant/ux-v2.1). This is the structured payload a merchant's own free-text explanation is parsed into; it becomes a Work's DecisionRequest.display_payload once complete (specs/domain/decision-request.schema.json). It is workbench-local, not a cross-ENG domain contract: capacity/duration bounds here are the demo resource policy from the prototype, not a platform-wide inventory rule (that is ENG-02 scope).",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-06",
+    "sa_trace": ["FR-17", "FR-18"],
+    "sd_trace": ["work-execution-contract.md §1,§2"],
+    "replaces_recovered_attachment": false
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name", "content", "price", "duration_minutes", "capacity",
+    "available_times", "onsite_note", "channels", "rights_confirmed"
+  ],
+  "properties": {
+    "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "content": {
+      "type": "string",
+      "minLength": 10,
+      "maxLength": 4000,
+      "description": "The merchant's own explanation, preserved verbatim (backlog ENG-06 acceptance: 模型解析出的內容可核對且不被固定範例覆蓋). A service MUST NOT substitute a canned example for this field."
+    },
+    "price": { "$ref": "https://contracts.travel-ai-platform.invalid/domain/v1/common/money.schema.json#/$defs/Money" },
+    "duration_minutes": { "type": "integer", "minimum": 15, "maximum": 300 },
+    "capacity": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 8,
+      "description": "Demo resource cap carried over from the UX 2.1 prototype (最多 8 席); not a platform-wide inventory rule. backlog ENG-06 acceptance: 容量等不合法值在前後端都被拒絕."
+    },
+    "available_times": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "onsite_note": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "channels": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "type": "string", "enum": ["WEB", "PARTNER"] }
+    },
+    "asset_ref": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Opaque reference to a stored asset (e.g. an uploaded explanation card); never a raw file or objectURL."
+    },
+    "asset_waived": {
+      "type": "boolean",
+      "description": "True when the merchant explicitly chose to publish without this optional asset (UX 2.1 '先只做中文接待版')."
+    },
+    "rights_confirmed": {
+      "type": "boolean",
+      "description": "Merchant's explicit confirmation of usage rights for asset_ref; meaningless and ignored when asset_ref is absent."
+    }
+  },
+  "allOf": [
+    {
+      "if": { "required": ["asset_ref"] },
+      "then": { "properties": { "rights_confirmed": { "const": true } }, "required": ["rights_confirmed"] },
+      "description": "An asset can only be carried into a decision card once its usage rights are confirmed (UX 2.1 material() gating)."
+    },
+    {
+      "anyOf": [
+        { "required": ["asset_ref"] },
+        { "properties": { "asset_waived": { "const": true } }, "required": ["asset_waived"] }
+      ],
+      "description": "A proposal is only complete once it either carries a confirmed asset or the merchant explicitly waived it."
+    }
+  ]
+}

@@ -213,6 +213,53 @@ headRefOid `b1d282d`）三個 job 全數 `pass`：`validate`、`db-migration-lif
 僅確認本次合併未破壞其既有通過狀態）：
 <https://github.com/ajoe734/travel-ai-platform/actions/runs/45879340234>。
 
+## dev 同步（candidate 875a8ea → 待產生新 merge SHA）
+
+PR #6 CI 回報 `mergeable: CONFLICTING`（dev 已併入 ENG-06 `5c0ba58`：`services/workbench/*`、
+`prototypes/merchant-assistant/workbench/*`、`tests/workbench_*`，以及 `specs/domain/error-codes.json`
+新增 `INVALID_SERVICE_REVISION_FIELD`／`MISSING_REQUIRED_INPUT`／`DECISION_NOT_PENDING`／
+`DECISION_OPTION_UNKNOWN`／`WORK_NOT_FOUND`／`WORK_PHASE_MISMATCH` 六筆條目；與本候選於同一份
+`error-codes.json` 末尾各自附加新條目，純附加式衝突，未觸及任何程式邏輯）。候選尚未進入 review
+鎖定狀態，依 AI_COLLABORATION_GUIDE.md §0.6/§0.7 在本 task worktree `git merge origin/dev` 解衝突、
+保留雙方新增的錯誤碼條目、重新驗證後以新 SHA 重交：
+
+```bash
+$ python3 -m unittest tests.authorization_service_test tests.domain_contract_test tests.connector_contract_test -v
+...
+Ran 123 tests in 0.220s
+
+OK
+```
+
+```bash
+$ python3 -m unittest tests.workbench_service_test -v
+...
+Ran 31 tests in 3.000s
+
+OK
+```
+
+```bash
+$ python3 scripts/validate_repository.py
+Repository checks: passed
+Original files verified: 12
+Local documentation links checked: 231
+JavaScript scripts checked: 4
+```
+
+`authorization_service_test`（69/69）、`domain_contract_test`（13/13）、`connector_contract_test`
+（41/41）均通過，與前次合併後計數相同；`workbench_service_test`（31/31，ENG-06 帶入，非本任務
+範圍，僅確認合併未破壞）亦通過。連結檢查 216→231、JS 腳本 3→4 是 ENG-06 新增
+`specs/workbench/*`、`tests/workbench_frontend_test.cjs` 的文件與腳本，非本次改動新增。本 merge
+commit 未修改 `services/authorization/`、`tests/authorization_service_test.py` 或
+`specs/authorization/{README,api-contract,acceptance-trace}.md` 的任何既有內容（僅
+`specs/domain/error-codes.json` 的附加式解衝突：保留 ENG-03 四筆 `x_added_by: ENG-03` 條目與
+ENG-06 新增的六筆條目），Round 1/Round 2 的 F1-F8 修正與回歸案例原樣保留。
+
+本 merge commit 將 push origin/claude/eng-03，待 hosted CI 對該 headRefOid 跑完後由 GitHub bus
+收錄結果；本輪未等待即記錄本機證據，merge commit SHA 與 CI 結果由後續 docs commit 補記（同
+前次「dev 同步（candidate 973dcf0 → b1d282d）」後接 `875a8ea` 補記 CI 證據的模式）。
+
 ## 未驗項總表（非逐項重複，彙整）
 
 - 沒有啟動 PostgreSQL；所有「原子」行為（UNIQUE 約束、AuthorizationUse 唯一性、撤回/dispatch 先後序）
