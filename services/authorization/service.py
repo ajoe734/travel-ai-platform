@@ -40,6 +40,7 @@ from .errors import (
     version_conflict,
 )
 from .repository import InMemoryAuthorizationRepository
+from .temporal import is_at_or_before
 
 REQUIRED_CANONICAL_PAYLOAD_FIELDS = (
     # SD §3.1 "批准 payload 至少包含" checklist, operationalized as field names.
@@ -85,6 +86,50 @@ def validate_canonical_payload(payload: dict[str, Any]) -> None:
         )
 
 
+def _require_same_tenant(tenant_id: str, ref: dict[str, Any] | None, what: str) -> None:
+    """SA 08.3: every TenantScopedRef a caller supplies must belong to the requesting tenant."""
+    if ref is not None and ref.get("tenant_id") != tenant_id:
+        raise cross_tenant_rejected(f"{what} belongs to a different tenant")
+
+
+def _require_same_tenant_refs(tenant_id: str, refs: list[dict[str, Any]] | None, what: str) -> None:
+    for ref in refs or []:
+        _require_same_tenant(tenant_id, ref, what)
+
+
+def _validate_scope_manifest_matches_payload(scope_manifest: list[dict[str, Any]], display_payload: dict[str, Any]) -> None:
+    """SD §5/SD-A-05: the manifest a human approves must be the one the decision displayed,
+    not whatever the caller happens to pass to approve_decision."""
+    allowed_items = set(display_payload.get("manifest_items", []))
+    operation = display_payload.get("operation")
+    for item in scope_manifest:
+        if item["item_id"] not in allowed_items:
+            raise authorization_scope_mismatch(
+                f"scope_manifest item {item['item_id']!r} is not one of the approved "
+                f"display_payload.manifest_items {sorted(allowed_items)}"
+            )
+        if item["operation"] != operation:
+            raise authorization_scope_mismatch(
+                f"scope_manifest item {item['item_id']!r} operation {item['operation']!r} does not match "
+                f"the approved display_payload.operation {operation!r}"
+            )
+
+
+# SD §5: "執行前核對 operation、resource、version、channel/account、amount/currency、用途及有效期均在該
+# item 內" — every one of these fields that the approved scope_manifest item declares is a bound
+# constraint; an execution-time manifest item may not disagree with it (ENG-03 Round 1 fix, finding F2).
+_SCOPE_BOUND_FIELDS = ("resource_ref", "resource_revision", "channel", "account", "purpose", "expires_at", "amount")
+
+
+def _manifest_item_within_scope(item: dict[str, Any], scope_item: dict[str, Any]) -> bool:
+    if item["operation"] != scope_item["operation"]:
+        return False
+    for field in _SCOPE_BOUND_FIELDS:
+        if field in scope_item and item.get(field) != scope_item[field]:
+            return False
+    return True
+
+
 class AuthorizationService:
     def __init__(
         self,
@@ -111,6 +156,8 @@ class AuthorizationService:
         context_refs: list[dict[str, Any]] | None = None,
         id: str | None = None,
     ) -> tuple[dict[str, Any], str]:
+        _require_same_tenant(tenant_id, work_id, "work_id")
+        _require_same_tenant_refs(tenant_id, context_refs, "context_refs")
         if display_payload.get("tenant_id") != tenant_id:
             raise cross_tenant_rejected("display_payload.tenant_id does not match the requesting tenant")
         validate_canonical_payload(display_payload)
@@ -160,6 +207,7 @@ class AuthorizationService:
                 f"decision {decision_id} is at revision {current['revision']} ({current['status']}), "
                 f"not the expected PENDING revision {expected_revision}"
             )
+        _require_same_tenant_refs(tenant_id, context_refs, "context_refs")
         if display_payload.get("tenant_id") != tenant_id:
             raise cross_tenant_rejected("display_payload.tenant_id does not match the requesting tenant")
         validate_canonical_payload(display_payload)
@@ -235,9 +283,21 @@ class AuthorizationService:
             )
         if decision["status"] != "PENDING":
             raise version_conflict(f"decision {decision_id} revision {expected_revision} is already {decision['status']}")
+        if is_at_or_before(decision["expires_at"], approved_at):
+            raise authorization_stale(
+                f"decision {decision_id} revision {expected_revision} expired at {decision['expires_at']}, "
+                f"cannot approve at {approved_at}"
+            )
 
-        nonce = self.repository.consume_nonce(nonce_id)
-        if nonce is None:
+        for item in scope_manifest:
+            _require_same_tenant(tenant_id, item.get("resource_ref"), "scope_manifest resource_ref")
+        _validate_scope_manifest_matches_payload(scope_manifest, decision["display_payload"])
+
+        # Validate the nonce (SD §1/SD-A-01) without destroying it until every other check has
+        # passed (finding F5): a cross-tenant/wrong-role/stale call must not burn a legitimate
+        # decision's nonce just because it happened to try consuming it first.
+        nonce = self.repository.peek_nonce(nonce_id)
+        if nonce is None or nonce["consumed"]:
             raise unverified_approval_rejected(
                 "approve_decision requires a confirmation nonce issued by create_decision/propose_revision "
                 "through a trusted UI or voice confirmation flow; no model text or client flag substitutes for it"
@@ -255,6 +315,9 @@ class AuthorizationService:
         option_ids = {o["option_id"] for o in decision["options"]}
         if selected_option_id not in option_ids:
             raise ValueError(f"selected_option_id {selected_option_id!r} is not one of {sorted(option_ids)}")
+
+        if self.repository.consume_nonce(nonce_id) is None:
+            raise unverified_approval_rejected("confirmation nonce was consumed by a concurrent request")
 
         approval: dict[str, Any] = {
             "tenant_id": tenant_id,
@@ -300,7 +363,11 @@ class AuthorizationService:
         rejected_by: dict[str, Any],
         reason: str,
         idempotency_key: str,
+        if_match_revision: int | None = None,
     ) -> dict[str, Any]:
+        if if_match_revision is not None and if_match_revision != expected_revision:
+            raise version_conflict("expected_revision and If-Match ETag disagree; refusing to guess which applies")
+
         request_hash = canonical_json.payload_hash(
             {
                 "decision_id": decision_id,
@@ -313,7 +380,11 @@ class AuthorizationService:
         if idem is not None:
             if idem["request_hash"] != request_hash:
                 raise idempotency_conflict("Idempotency-Key reused with different content for reject_decision")
-            return self.repository.get_decision_revision(tenant_id, decision_id, idem["result_ref"]["revision"])
+            replayed = self.repository.get_decision_revision(tenant_id, decision_id, idem["result_ref"]["revision"])
+            stored_reason = self.repository.get_rejection_reason(tenant_id, decision_id, idem["result_ref"]["revision"])
+            if stored_reason is not None:
+                replayed["reason"] = stored_reason["reason"]
+            return replayed
 
         decision = self.repository.get_decision_latest(tenant_id, decision_id)
         if decision is None:
@@ -334,16 +405,18 @@ class AuthorizationService:
             raise ValueError(f"selected_option_id {selected_option_id!r} is not one of {sorted(option_ids)}")
 
         updated = self.repository.update_decision_status(tenant_id, decision_id, expected_revision, "REJECTED", selected_option_id)
+        self.repository.put_rejection_reason(tenant_id, decision_id, expected_revision, reason, rejected_by)
         self.repository.put_idempotency(
             tenant_id, rejected_by["actor_id"], "reject_decision", idempotency_key, request_hash,
             {"decision_id": decision_id, "revision": expected_revision},
         )
+        updated["reason"] = reason
         return updated
 
     def expire_decisions(self, *, tenant_id: str, now: str) -> list[dict[str, Any]]:
         expired = []
         for decision in self.repository.list_pending_decisions(tenant_id):
-            if decision["expires_at"] <= now:
+            if is_at_or_before(decision["expires_at"], now):
                 expired.append(
                     self.repository.update_decision_status(tenant_id, decision["id"], decision["revision"], "EXPIRED")
                 )
@@ -373,6 +446,12 @@ class AuthorizationService:
             raise policy_approval_required(
                 "ExecutionAuthorization needs at least one of grant_refs (policy) or approval_refs (decision)"
             )
+        _require_same_tenant(tenant_id, work_id, "work_id")
+        _require_same_tenant_refs(tenant_id, resource_refs, "resource_refs")
+        _require_same_tenant_refs(tenant_id, consent_refs, "consent_refs")
+        for item in manifest:
+            _require_same_tenant(tenant_id, item.get("resource_ref"), "manifest resource_ref")
+
         for ref in approval_refs or []:
             if ref["tenant_id"] != tenant_id:
                 raise cross_tenant_rejected("approval_refs entry belongs to a different tenant")
@@ -381,24 +460,35 @@ class AuthorizationService:
                 raise cross_tenant_rejected("approval not found in this tenant")
             if not self.repository.is_approval_effective(tenant_id, ref["id"], now):
                 raise authorization_revoked(f"approval {ref['id']} has been revoked")
-            allowed_operations = {item["operation"] for item in approval["scope_manifest"]}
+            scope_by_item_id = {s["item_id"]: s for s in approval["scope_manifest"]}
             for item in manifest:
-                if item["operation"] not in allowed_operations:
+                scope_item = scope_by_item_id.get(item["item_id"])
+                if scope_item is None or not _manifest_item_within_scope(item, scope_item):
                     raise authorization_scope_mismatch(
-                        f"manifest item {item['item_id']!r} operation {item['operation']!r} is outside "
-                        f"approval {ref['id']}'s scope_manifest"
+                        f"manifest item {item['item_id']!r} is outside approval {ref['id']}'s scope_manifest "
+                        "(operation/resource_ref/resource_revision/channel/account/amount/purpose/expires_at "
+                        "must match the approved item exactly)"
                     )
+
+        # SD §1/§5: a single reusable grant may cover one capability while a sibling grant_ref
+        # covers another; coverage is the union across every referenced grant, not a demand that
+        # any one grant alone list every requested capability (finding F6).
+        covered_capabilities: set[str] = set()
         for ref in grant_refs or []:
             if ref["tenant_id"] != tenant_id:
                 raise cross_tenant_rejected("grant_refs entry belongs to a different tenant")
             grant = self.repository.get_grant(tenant_id, ref["id"])
             if grant is None:
                 raise cross_tenant_rejected("grant not found in this tenant")
-            if grant.get("revoked") or grant["expiry"] <= now:
+            if grant.get("revoked") or is_at_or_before(grant["expiry"], now):
                 raise authorization_revoked(f"grant {ref['id']} is revoked or expired")
-            for capability in capabilities:
-                if capability not in grant.get("capabilities", []):
-                    raise policy_approval_required(f"grant {ref['id']} does not cover capability {capability!r}")
+            if grant.get("budget_remaining") is not None and grant["budget_remaining"] <= 0:
+                raise policy_approval_required(f"grant {ref['id']} has no budget remaining")
+            covered_capabilities.update(grant.get("capabilities", []))
+        if grant_refs:
+            missing = [c for c in capabilities if c not in covered_capabilities]
+            if missing:
+                raise policy_approval_required(f"grant_refs do not cover capabilities {missing}")
 
         sorted_manifest = sorted(manifest, key=lambda item: item["item_id"])
         authorization: dict[str, Any] = {
@@ -425,8 +515,15 @@ class AuthorizationService:
         schema_validation.validate("ExecutionAuthorization", authorization)
 
         # Budget is consumed only after everything else has already succeeded,
-        # so a rejected request never burns a reusable grant's period budget.
+        # so a rejected request never burns a reusable grant's period budget. Dedupe by
+        # grant id first: the same grant covering two different requested capabilities must
+        # only be charged once per authorization, not once per capability it happens to cover
+        # (finding F6).
+        consumed_grant_ids: set[str] = set()
         for ref in grant_refs or []:
+            if ref["id"] in consumed_grant_ids:
+                continue
+            consumed_grant_ids.add(ref["id"])
             self.repository.consume_grant_budget(tenant_id, ref["id"])
 
         self.repository.put_authorization(authorization)
@@ -448,12 +545,15 @@ class AuthorizationService:
         when a reusable grant already covers every requested capability.
         Returns None (never raises) when no covering grant exists, so the
         caller falls back to create_decision/approve_decision."""
-        grant_refs = []
+        grant_refs: list[dict[str, Any]] = []
+        seen_grant_ids: set[str] = set()
         for capability in capabilities:
             grant = self.repository.find_covering_grant(tenant_id, capability, now)
             if grant is None:
                 return None
-            grant_refs.append({"tenant_id": tenant_id, "id": grant["id"]})
+            if grant["id"] not in seen_grant_ids:
+                seen_grant_ids.add(grant["id"])
+                grant_refs.append({"tenant_id": tenant_id, "id": grant["id"]})
         return self.issue_execution_authorization(
             tenant_id=tenant_id,
             work_id=work_id,
@@ -469,15 +569,17 @@ class AuthorizationService:
     # -- AuthorizationUse + pre-dispatch recheck (SD §5/§6) -----------------------
 
     def _check_authorization_still_valid(self, tenant_id: str, authorization: dict[str, Any], now: str) -> None:
-        if authorization.get("expiry") and authorization["expiry"] <= now:
+        if authorization.get("expiry") and is_at_or_before(authorization["expiry"], now):
             raise authorization_stale(f"authorization {authorization['id']} expired at {authorization['expiry']}")
         for ref in authorization.get("approval_refs", []):
             if not self.repository.is_approval_effective(tenant_id, ref["id"], now):
                 raise authorization_revoked(f"approval {ref['id']} backing this authorization has been revoked")
         for ref in authorization.get("grant_refs", []):
             grant = self.repository.get_grant(tenant_id, ref["id"])
-            if grant is not None and grant.get("revoked"):
-                raise authorization_revoked(f"grant {ref['id']} backing this authorization has been revoked")
+            if grant is None or grant.get("revoked") or is_at_or_before(grant["expiry"], now):
+                raise authorization_revoked(
+                    f"grant {ref['id']} backing this authorization is missing, revoked, or expired"
+                )
 
     def consume_authorization_use(
         self,
@@ -490,15 +592,26 @@ class AuthorizationService:
         used_at: str,
         now: str,
     ) -> dict[str, Any]:
+        _require_same_tenant(tenant_id, root_task_id, "root_task_id")
         with self.repository.lock_for(tenant_id, authorization_id):
             authorization = self.repository.get_authorization(tenant_id, authorization_id)
             if authorization is None:
                 raise cross_tenant_rejected("authorization not found in this tenant")
             self._check_authorization_still_valid(tenant_id, authorization, now)
+            if authorization["root_business_key"] != root_business_key:
+                raise authorization_scope_mismatch(
+                    f"authorization {authorization_id} is bound to root_business_key "
+                    f"{authorization['root_business_key']!r}, not {root_business_key!r}"
+                )
 
             existing = self.repository.get_authorization_use(tenant_id, authorization_id)
             if existing is not None:
                 if existing["root_task_id"]["id"] == root_task_id["id"]:
+                    if existing["request_hash"] != request_hash:
+                        raise idempotency_conflict(
+                            f"authorization {authorization_id} was already used by root task "
+                            f"{root_task_id['id']} with a different request_hash"
+                        )
                     return existing  # SD-A-06: resend finds the same use, not a new one
                 raise authorization_use_already_bound(
                     f"authorization {authorization_id} already consumed by root task "
@@ -534,8 +647,19 @@ class AuthorizationService:
     def mark_dispatched(self, *, tenant_id: str, authorization_id: str, now: str) -> None:
         """Record that a worker actually sent the external call, under the same
         root lock precheck_before_dispatch/revoke_approval use, so revoke can
-        tell whether it won the race against dispatch (SD §6)."""
+        tell whether it won the race against dispatch (SD §6).
+
+        Rechecks validity under the same lock immediately before marking (finding F4):
+        precheck_before_dispatch and mark_dispatched are two separate calls around the
+        actual external call, so a revoke_approval that lands in between must still be
+        able to win — recording a dispatch the revoke already raced past would let a
+        just-revoked action go out anyway.
+        """
         with self.repository.lock_for(tenant_id, authorization_id):
+            authorization = self.repository.get_authorization(tenant_id, authorization_id)
+            if authorization is None:
+                raise cross_tenant_rejected("authorization not found in this tenant")
+            self._check_authorization_still_valid(tenant_id, authorization, now)
             self.repository.mark_dispatched(tenant_id, authorization_id, now)
 
     def is_approval_effective(self, *, tenant_id: str, approval_id: str, at: str) -> bool:
