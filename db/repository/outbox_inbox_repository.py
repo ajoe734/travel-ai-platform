@@ -125,3 +125,19 @@ def record_inbound_event(
         (tenant_id, event_id, connector_account_id, environment, producer, source_event_id, raw_hash, json.dumps(raw_payload)),
     ).fetchone()
     return InboxOutcome(InboxOutcome.CREATED, dict(zip(_INBOX_COLUMNS, row)))
+
+
+def mark_inbox_processed(conn: psycopg.Connection, *, tenant_id: str, event_id: str, processed_at: str) -> None:
+    """RECEIVED -> PROCESSED once the event has actually been applied to a
+    task/order. A QUARANTINED row is never touched by this (its application
+    was refused, not completed), and a second call against an
+    already-PROCESSED row is a harmless no-op (its WHERE clause matches zero
+    rows), matching the duplicate-webhook replay path."""
+    conn.execute(
+        """
+        UPDATE inbox_event
+        SET processing_status = 'PROCESSED', processed_at = %s
+        WHERE tenant_id = %s AND id = %s AND processing_status = 'RECEIVED'
+        """,
+        (processed_at, tenant_id, event_id),
+    )
