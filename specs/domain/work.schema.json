@@ -59,8 +59,15 @@
       "type": "object",
       "description": "SD §2/§7: immutable; references a verified external/source fact, not a chat transcript or an HTTP 200.",
       "additionalProperties": false,
-      "required": ["evidence_type", "environment", "external_ref", "observed_at", "verifier_version"],
+      "required": ["tenant_id", "id", "work_id", "evidence_type", "environment", "external_ref", "observed_at", "verifier_version"],
       "properties": {
+        "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+        "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+        "work_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+        "task_id": {
+          "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef",
+          "description": "The ExecutionTask this evidence verifies. Optional: work-level evidence (e.g. a cross-task notification confirmation) may not belong to a single task."
+        },
         "evidence_type": { "type": "string", "minLength": 1 },
         "source_account": { "type": "string" },
         "environment": { "type": "string", "enum": ["PRODUCTION", "SANDBOX", "MOCK"] },
@@ -215,9 +222,16 @@
       "additionalProperties": false,
       "required": ["completed_items", "incomplete_items", "as_of"],
       "properties": {
-        "completed_items": { "type": "array", "items": { "type": "string" } },
+        "completed_items": {
+          "type": "array",
+          "minItems": 1,
+          "description": "SD §3: PARTIAL requires at least one completed required sub-item; a Work with nothing finished is RUNNING/WAITING_*, not PARTIAL.",
+          "items": { "type": "string" }
+        },
         "incomplete_items": {
           "type": "array",
+          "minItems": 1,
+          "description": "SD §3: PARTIAL also requires at least one required sub-item still incomplete; if everything is done the Work is COMPLETED, not PARTIAL.",
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -240,7 +254,8 @@
         "reason": { "type": "string", "minLength": 1 },
         "irreversible_effects_resolved": {
           "type": "boolean",
-          "description": "SD §3: 沒有未判定的不可逆副作用才能轉 FAILED."
+          "const": true,
+          "description": "SD §3: 沒有未判定的不可逆副作用才能轉 FAILED. This object only exists on a Work already in status=FAILED (see allOf below), so by the time it is persisted the transition precondition must already hold; false here would mean the FAILED transition happened before resolution, which SD §3 forbids outright rather than allowing as a transient flag."
         },
         "compensation_or_escalation_ref": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
       }
@@ -258,12 +273,12 @@
     "updated_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
   },
   "allOf": [
-    { "if": { "properties": { "status": { "const": "WAITING_INPUT" } }, "required": ["status"] }, "then": { "required": ["waiting_input"] } },
-    { "if": { "properties": { "status": { "const": "WAITING_DECISION" } }, "required": ["status"] }, "then": { "required": ["waiting_decision"] } },
-    { "if": { "properties": { "status": { "const": "WAITING_EXTERNAL" } }, "required": ["status"] }, "then": { "required": ["waiting_external"] } },
-    { "if": { "properties": { "status": { "const": "COMPLETED" } }, "required": ["status"] }, "then": { "required": ["completion_record"] } },
-    { "if": { "properties": { "status": { "const": "PARTIAL" } }, "required": ["status"] }, "then": { "required": ["partial_summary"] } },
-    { "if": { "properties": { "status": { "const": "FAILED" } }, "required": ["status"] }, "then": { "required": ["failure"] } },
-    { "if": { "properties": { "status": { "const": "CANCELLED" } }, "required": ["status"] }, "then": { "required": ["cancellation"] } }
+    { "if": { "properties": { "status": { "const": "WAITING_INPUT" } }, "required": ["status"] }, "then": { "required": ["waiting_input"] }, "else": { "not": { "required": ["waiting_input"] } } },
+    { "if": { "properties": { "status": { "const": "WAITING_DECISION" } }, "required": ["status"] }, "then": { "required": ["waiting_decision"] }, "else": { "not": { "required": ["waiting_decision"] } } },
+    { "if": { "properties": { "status": { "const": "WAITING_EXTERNAL" } }, "required": ["status"] }, "then": { "required": ["waiting_external"] }, "else": { "not": { "required": ["waiting_external"] } } },
+    { "if": { "properties": { "status": { "const": "COMPLETED" } }, "required": ["status"] }, "then": { "required": ["completion_record"] }, "else": { "not": { "required": ["completion_record"] } } },
+    { "if": { "properties": { "status": { "const": "PARTIAL" } }, "required": ["status"] }, "then": { "required": ["partial_summary"] }, "else": { "not": { "required": ["partial_summary"] } } },
+    { "if": { "properties": { "status": { "const": "FAILED" } }, "required": ["status"] }, "then": { "required": ["failure"] }, "else": { "not": { "required": ["failure"] } } },
+    { "if": { "properties": { "status": { "const": "CANCELLED" } }, "required": ["status"] }, "then": { "required": ["cancellation"] }, "else": { "not": { "required": ["cancellation"] } } }
   ]
 }

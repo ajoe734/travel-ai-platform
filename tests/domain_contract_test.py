@@ -89,6 +89,9 @@ FIXTURES = [
     (DOMAIN / "work.schema.json", None, EXAMPLES / "work/work-1-booking-valid.json", True),
     (DOMAIN / "work.schema.json", None, EXAMPLES / "work/work-2-reschedule-valid.json", True),
     (DOMAIN / "work.schema.json", None, EXAMPLES / "work/work-invalid-waiting-external-missing-reason.json", False),
+    (DOMAIN / "work.schema.json", None, EXAMPLES / "work/work-invalid-failed-irreversible-not-resolved.json", False),  # R1 F5(a): FAILED required irreversible_effects_resolved=true, not just present
+    (DOMAIN / "work.schema.json", None, EXAMPLES / "work/work-invalid-completion-record-wrong-status.json", False),  # R1 F5(a): completion_record is now forbidden outside status=COMPLETED
+    (DOMAIN / "work.schema.json", None, EXAMPLES / "work/work-invalid-partial-summary-empty.json", False),  # R1 F5(a): partial_summary.completed_items now requires minItems:1
 
     (DOMAIN / "execution-task.schema.json", None, EXAMPLES / "execution-task/task-1-booking-create-valid.json", True),
     (DOMAIN / "execution-task.schema.json", None, EXAMPLES / "execution-task/task-2-notification-valid.json", True),
@@ -97,6 +100,8 @@ FIXTURES = [
 
     (DOMAIN / "execution-attempt.schema.json", None, EXAMPLES / "execution-attempt/attempt-1-timeout-valid.json", True),
     (DOMAIN / "execution-attempt.schema.json", None, EXAMPLES / "execution-attempt/attempt-2-reconcile-valid.json", True),
+    (DOMAIN / "execution-attempt.schema.json", None, EXAMPLES / "execution-attempt/attempt-invalid-duplicate-attempt-no.json", True),  # shape-valid; (tenant_id, task_id, attempt_no) collision is the Python-level check below
+    (DOMAIN / "execution-attempt.schema.json", None, EXAMPLES / "execution-attempt/attempt-invalid-bad-outcome.json", False),  # R1 F6: outcome='SUPPORTED' is a capability word, not a valid OperationResult outcome (ADR 0002)
 
     (DOMAIN / "complaint.schema.json", None, EXAMPLES / "complaint/complaint-1-refund-succeeded-not-closed-valid.json", True),
     (DOMAIN / "complaint.schema.json", None, EXAMPLES / "complaint/complaint-invalid-resolved-without-resolution.json", False),
@@ -104,17 +109,23 @@ FIXTURES = [
 
     (DOMAIN / "decision-request.schema.json", None, EXAMPLES / "decision-request/decision-1-pending-valid.json", True),
     (DOMAIN / "decision-request.schema.json", None, EXAMPLES / "decision-request/decision-invalid-approved-without-selection.json", False),
+    (DOMAIN / "decision-request.schema.json", None, EXAMPLES / "decision-request/decision-invalid-pending-with-selection.json", False),  # R1 F5(b): selected_option_id is now forbidden outside APPROVED/REJECTED
 
     (DOMAIN / "approval-record.schema.json", None, EXAMPLES / "approval/approval-record-1-valid.json", True),
     (DOMAIN / "approval-record.schema.json", None, EXAMPLES / "approval/approval-record-invalid-missing-manifest.json", False),
     (DOMAIN / "approval-record.schema.json", "#/$defs/CustomerConsent", EXAMPLES / "approval/customer-consent-1-valid.json", True),
     (DOMAIN / "approval-record.schema.json", "#/$defs/ExecutionAuthorization", EXAMPLES / "approval/execution-authorization-1-valid.json", True),
+    (DOMAIN / "approval-record.schema.json", "#/$defs/ExecutionAuthorization", EXAMPLES / "approval/execution-authorization-2-policy-only-valid.json", True),  # R1 F1: grant_refs alone (no manual ApprovalRecord) now satisfies the anyOf
+    (DOMAIN / "approval-record.schema.json", "#/$defs/ExecutionAuthorization", EXAMPLES / "approval/execution-authorization-invalid-no-basis.json", False),  # R1 F1: neither grant_refs nor approval_refs present must fail the anyOf
     (DOMAIN / "approval-record.schema.json", "#/$defs/AuthorizationUse", EXAMPLES / "approval/authorization-use-1-valid.json", True),
     (DOMAIN / "approval-record.schema.json", "#/$defs/AuthorizationUse", EXAMPLES / "approval/authorization-use-2-same-authorization-second-root-invalid.json", True),  # shape-valid; uniqueness is the Python-level check below
     (DOMAIN / "approval-record.schema.json", "#/$defs/ApprovalRevocation", EXAMPLES / "approval/approval-revocation-1-valid.json", True),
 
     (DOMAIN / "order.schema.json", None, EXAMPLES / "order/order-1-confirmed-valid.json", True),
     (DOMAIN / "order.schema.json", None, EXAMPLES / "order/order-invalid-merged-status.json", False),
+
+    (DOMAIN / "common" / "money.schema.json", "#/$defs/SignedMinorUnitsAmount", EXAMPLES / "common/signed-minor-units-amount-valid-negative.json", True),
+    (DOMAIN / "common" / "money.schema.json", "#/$defs/SignedMinorUnitsAmount", EXAMPLES / "common/signed-minor-units-amount-invalid-negative-zero.json", False),  # R1 F5(c): '-0' must not be a second representation of zero
 
     (DOMAIN / "common" / "error-envelope.schema.json", None, EXAMPLES / "error-envelope/error-1-version-conflict-valid.json", True),
     (DOMAIN / "common" / "error-envelope.schema.json", None, EXAMPLES / "error-envelope/error-invalid-leaks-tenant-code-format.json", False),
@@ -257,6 +268,23 @@ class TraceabilityPresence(unittest.TestCase):
                 self.assertEqual(origin.get("status"), "new_sd_contract")
                 trace = origin.get("sa_trace") or origin.get("sd_trace")
                 self.assertTrue(trace, f"{path.name} x_origin has no sa_trace/sd_trace entries")
+
+
+class FixtureCoverage(unittest.TestCase):
+    """R1 F6: specs/domain/README.md promises every example has a FIXTURES
+    entry; a fixture that exists on disk but is never fed through
+    Draft202012Validator is not actually exercised by this test suite."""
+
+    def test_every_example_file_is_referenced_by_fixtures(self) -> None:
+        covered = {example_path.resolve() for _, _, example_path, _ in FIXTURES}
+        on_disk = sorted(EXAMPLES.glob("**/*.json"))
+        self.assertTrue(on_disk, "no example fixtures found under specs/domain/examples/")
+        uncovered = [p for p in on_disk if p.resolve() not in covered]
+        self.assertEqual(
+            uncovered, [],
+            "examples/**/*.json not covered by any FIXTURES entry: "
+            f"{[p.relative_to(ROOT).as_posix() for p in uncovered]}",
+        )
 
 
 if __name__ == "__main__":

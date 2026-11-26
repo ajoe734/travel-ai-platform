@@ -52,9 +52,15 @@
     },
     "selected_option_id": {
       "type": "string",
-      "description": "Only present once status is APPROVED or REJECTED."
+      "minLength": 1,
+      "description": "Only present once status is APPROVED or REJECTED (enforced by allOf below)."
     },
     "impact_summary": { "type": "string" },
+    "display_payload": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "SD §2/§4: the canonical display payload payload_hash was computed over; what the decision card actually shows (SD §7). Optional here because the display payload itself is addressed by payload_hash; present when the content needs to be carried alongside the request rather than only hashed."
+    },
     "payload_hash": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
@@ -77,7 +83,8 @@
   "allOf": [
     {
       "if": { "properties": { "status": { "enum": ["APPROVED", "REJECTED"] } }, "required": ["status"] },
-      "then": { "required": ["selected_option_id"] }
+      "then": { "required": ["selected_option_id"] },
+      "else": { "not": { "required": ["selected_option_id"] } }
     }
   ]
 }

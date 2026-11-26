@@ -24,6 +24,19 @@
     "completed_at": "2026-11-21T09:00:00Z",
     "completion_contract_version": "booking-completion-v1"
   },
+  "completion_evidence": [
+    {
+      "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "id": "00000000-0000-4000-8000-000000000f01",
+      "work_id": { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000101" },
+      "task_id": { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000201" },
+      "evidence_type": "SUPPLIER_CONFIRMED_BOOKING",
+      "environment": "PRODUCTION",
+      "external_ref": "supplier-booking-ref-77421",
+      "observed_at": "2026-11-21T08:55:00Z",
+      "verifier_version": "booking-verifier-v1"
+    }
+  ],
   "created_at": "2026-11-20T02:05:00Z",
   "updated_at": "2026-11-21T09:00:00Z"
 }

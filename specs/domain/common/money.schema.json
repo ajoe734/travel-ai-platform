@@ -28,8 +28,8 @@
     },
     "SignedMinorUnitsAmount": {
       "type": "string",
-      "pattern": "^-?(0|[1-9][0-9]*)$",
-      "description": "Same encoding as MinorUnitsAmount but permits a leading '-' for ledger entries that must express direction explicitly in computation (e.g. reconciliation deltas). Domain ledgers still record entry_type rather than relying on sign alone (SD credit-and-refund.md §6.2)."
+      "pattern": "^(0|-?[1-9][0-9]*)$",
+      "description": "Same encoding as MinorUnitsAmount but permits a leading '-' for ledger entries that must express direction explicitly in computation (e.g. reconciliation deltas). Domain ledgers still record entry_type rather than relying on sign alone (SD credit-and-refund.md §6.2). Zero has exactly one representation ('0'); '-0' is rejected because it would let two byte-distinct strings claim the same value, breaking canonical-hash determinism (SD authorization-and-approval.md §3.2)."
     },
     "Money": {
       "type": "object",

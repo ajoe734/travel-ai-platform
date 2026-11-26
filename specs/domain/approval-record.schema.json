@@ -58,7 +58,7 @@
       "additionalProperties": false,
       "required": [
         "tenant_id", "id", "work_id", "root_business_key", "capabilities",
-        "approval_refs", "manifest_hash", "issued_at"
+        "manifest_hash", "issued_at"
       ],
       "properties": {
         "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
@@ -67,7 +67,12 @@
         "root_business_key": { "$ref": "common/identifiers.schema.json#/$defs/BusinessOperationKey" },
         "capabilities": { "type": "array", "minItems": 1, "items": { "type": "string" } },
         "resource_refs": { "type": "array", "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" } },
-        "grant_refs": { "type": "array", "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" } },
+        "grant_refs": {
+          "type": "array",
+          "minItems": 1,
+          "description": "SD §1: AuthorityGrant/PolicyVersion basis. A pre-approved policy may gate execution without a per-case manual ApprovalRecord (SD §1, SD-A-10); this is the other half of the anyOf below.",
+          "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
+        },
         "consent_refs": { "type": "array", "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" } },
         "approval_refs": {
           "type": "array",
@@ -78,7 +83,12 @@
         "manifest_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "expiry": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
         "issued_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
-      }
+      },
+      "anyOf": [
+        { "required": ["grant_refs"] },
+        { "required": ["approval_refs"] }
+      ],
+      "x_anyOf_note": "SD §1/§5, SD-A-10, backlog ENG-03: a policy-covered auto-execution needs grant_refs but no manual ApprovalRecord; a one-off decision needs approval_refs. At least one authorization basis is required; neither alone is forced on every gate."
     },
     "AuthorizationUse": {
       "type": "object",
@@ -101,7 +111,7 @@
   "additionalProperties": false,
   "required": [
     "tenant_id", "id", "decision_id", "reviewed_revision", "approved_by",
-    "verified_actor_ref", "canonicalization_version", "payload_hash",
+    "verified_actor_ref", "approved_payload", "canonicalization_version", "payload_hash",
     "scope_manifest", "approved_at"
   ],
   "properties": {
@@ -115,6 +125,11 @@
     },
     "approved_by": { "$ref": "common/identifiers.schema.json#/$defs/ActorRef" },
     "verified_actor_ref": { "type": "string", "minLength": 1 },
+    "approved_payload": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "SD §2/§3.1: the exact canonical content payload_hash was computed over (schema/canonicalization version, purpose, target type/ID/revision, amounts, manifest items, etc.). Immutable once written; never derived from a later, possibly different, DecisionRequest revision."
+    },
     "policy_version": { "type": "string" },
     "canonicalization_version": { "type": "string", "const": "travel-canonical-json-v1" },
     "payload_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -130,7 +145,15 @@
           "item_id": { "type": "string", "minLength": 1 },
           "operation": { "type": "string", "minLength": 1 },
           "resource_ref": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+          "resource_revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "SD §5: child-task pre-check 'operation、resource、version、channel/account、amount/currency、用途及有效期均在該 item 內'; version half of that check."
+          },
           "channel": { "type": "string" },
+          "account": { "type": "string", "description": "SD §5 channel/account half of the per-item pre-check." },
+          "purpose": { "type": "string", "minLength": 1 },
+          "expires_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
           "amount": { "$ref": "common/money.schema.json#/$defs/Money" }
         }
       }

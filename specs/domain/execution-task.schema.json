@@ -28,7 +28,7 @@
   "additionalProperties": false,
   "required": [
     "tenant_id", "id", "work_id", "kind", "operation", "business_key",
-    "request_hash", "status", "revision", "owner_revision",
+    "request_hash", "request_snapshot", "status", "revision", "owner_revision",
     "postcondition_version", "postcondition", "created_at", "updated_at"
   ],
   "properties": {
@@ -75,6 +75,11 @@
       "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef",
       "description": "Present once this task has consumed an AuthorizationUse (SD authorization-and-approval.md §5); absent while still DRAFT/NEW for operations that need one."
     },
+    "manifest_item_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "SD authorization-and-approval.md §5: the one scope_manifest item_id (ApprovalRecord/ExecutionAuthorization) this task is executing. Required alongside authorization_use_id (see allOf below) so the pre-dispatch check can confirm operation/resource/version/channel/account/amount/purpose/expiry all come from this exact manifest item, not a different one in the same approval."
+    },
     "deadline": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
     "next_run_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
     "lease": { "$ref": "#/$defs/TaskLease" },
@@ -86,6 +91,10 @@
       "if": { "properties": { "status": { "const": "PARTIAL" } }, "required": ["status"] },
       "then": { "properties": { "kind": { "const": "GROUP" } }, "required": ["kind"] },
       "else": true
+    },
+    {
+      "if": { "required": ["authorization_use_id"] },
+      "then": { "required": ["manifest_item_id"] }
     }
   ]
 }

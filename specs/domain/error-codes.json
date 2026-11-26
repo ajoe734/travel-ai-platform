@@ -26,7 +26,7 @@
       "http_status": 409,
       "retryable_default": false,
       "meaning": "同意／核准所綁的展示內容 hash 或版本已過期；重新展示差異並要求新確認。",
-      "source": "SA 08.3; SD authorization-and-approval.md §3.3/§8 SD-A-02"
+      "source": "SA 08.3; SD authorization-and-approval.md §3.2/§8 SD-A-02"
     },
     {
       "code": "AUTHORIZATION_SCOPE_MISMATCH",
@@ -40,7 +40,7 @@
       "http_status": 422,
       "retryable_default": false,
       "meaning": "此操作在該帳號／環境不支援或未授權；呼叫前拒絕並提供明確替代接法。",
-      "source": "SA 08.3; SD connector-result-and-reconciliation.md §2/§9 SD-C-06"
+      "source": "SA 08.3; SD connector-result-and-reconciliation.md §2/§10 SD-C-06"
     },
     {
       "code": "POLICY_APPROVAL_REQUIRED",
