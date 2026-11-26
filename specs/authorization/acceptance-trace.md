@@ -170,6 +170,42 @@ ENG-04 新增 `specs/connector/*` 的連結，非本次改動。merge commit `dd
 `specs/authorization/{README,api-contract,acceptance-trace}.md` 的任何既有內容（僅
 `specs/README.md` 的附加式解衝突），Round 1 的 F1-F8 修正與回歸案例原樣保留。
 
+## dev 同步（candidate 973dcf0 → 待產生新 merge SHA）
+
+PR #6 CI 回報 `mergeable: CONFLICTING`（dev 已併入 ENG-02 `06de29d`：db migrations、
+`db/repository/*`、`tests/db/*`，以及 `specs/domain/error-codes.json` 新增 `IMMUTABLE_RECORD`
+條目；與本候選於同一份 `error-codes.json` 末尾各自附加新條目，純附加式衝突，未觸及任何程式邏輯）。
+候選尚未進入 review 鎖定狀態，依 AI_COLLABORATION_GUIDE.md §0.6/§0.7 在本 task worktree
+`git merge origin/dev` 解衝突、保留雙方新增的錯誤碼條目、重新驗證後以新 SHA 重交：
+
+```bash
+$ python3 -m unittest tests.authorization_service_test tests.domain_contract_test tests.connector_contract_test -v
+...
+Ran 123 tests in 0.220s
+
+OK
+```
+
+```bash
+$ python3 scripts/validate_repository.py
+Repository checks: passed
+Original files verified: 12
+Local documentation links checked: 215
+JavaScript scripts checked: 3
+```
+
+`authorization_service_test`（69/69，含 `Round1RetrofitTests` 23/23、`Round2RetrofitTests` 7/7）、
+`domain_contract_test`（13/13）、`connector_contract_test`（41/41）均通過；連結檢查 214→215 是本次
+`error-codes.json` 合併後新增一筆 `source` 內部引用（ENG-02 `IMMUTABLE_RECORD` 條目），非本次改動
+新增文件連結。merge commit 未修改 `services/authorization/`、`tests/authorization_service_test.py`
+或 `specs/authorization/{README,api-contract,acceptance-trace}.md` 的任何既有內容（僅
+`specs/domain/error-codes.json` 的附加式解衝突：保留 ENG-03 四筆 `x_added_by: ENG-03` 條目與 ENG-02
+新增的 `IMMUTABLE_RECORD` 條目），Round 1/Round 2 的 F1-F8 修正與回歸案例原樣保留。
+
+依 [`README.md`](README.md) 的「不在本輪範圍」：ENG-02 的真正資料庫持久層落地後，換上符合
+`AuthorizationRepository` 介面的實作即可，`AuthorizationService` 本身不需要改；此次 dev 同步
+僅為解衝突重驗證，未將 `InMemoryAuthorizationRepository` 換接 `db/repository/*`（非本輪範圍）。
+
 ## 未驗項總表（非逐項重複，彙整）
 
 - 沒有啟動 PostgreSQL；所有「原子」行為（UNIQUE 約束、AuthorizationUse 唯一性、撤回/dispatch 先後序）
