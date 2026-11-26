@@ -170,7 +170,7 @@ ENG-04 新增 `specs/connector/*` 的連結，非本次改動。merge commit `dd
 `specs/authorization/{README,api-contract,acceptance-trace}.md` 的任何既有內容（僅
 `specs/README.md` 的附加式解衝突），Round 1 的 F1-F8 修正與回歸案例原樣保留。
 
-## dev 同步（candidate 973dcf0 → 待產生新 merge SHA）
+## dev 同步（candidate 973dcf0 → b1d282d）
 
 PR #6 CI 回報 `mergeable: CONFLICTING`（dev 已併入 ENG-02 `06de29d`：db migrations、
 `db/repository/*`、`tests/db/*`，以及 `specs/domain/error-codes.json` 新增 `IMMUTABLE_RECORD`
@@ -205,6 +205,13 @@ JavaScript scripts checked: 3
 依 [`README.md`](README.md) 的「不在本輪範圍」：ENG-02 的真正資料庫持久層落地後，換上符合
 `AuthorizationRepository` 介面的實作即可，`AuthorizationService` 本身不需要改；此次 dev 同步
 僅為解衝突重驗證，未將 `InMemoryAuthorizationRepository` 換接 `db/repository/*`（非本輪範圍）。
+
+merge commit `b1d282d` 已 push origin/claude/eng-03，PR #6 `mergeStateStatus` 轉為 `CLEAN`，
+`mergeable: MERGEABLE`。hosted CI（GitHub Actions workflow「Repository validation」，對
+headRefOid `b1d282d`）三個 job 全數 `pass`：`validate`、`db-migration-lifecycle`、
+`db-repository-tests`（後兩者為 ENG-02 合併後新增的 DB 契約/遷移 job，非本任務改動範圍，
+僅確認本次合併未破壞其既有通過狀態）：
+<https://github.com/ajoe734/travel-ai-platform/actions/runs/45879340234>。
 
 ## 未驗項總表（非逐項重複，彙整）
 
