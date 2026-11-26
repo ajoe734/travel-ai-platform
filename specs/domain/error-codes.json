@@ -171,6 +171,22 @@
       "retryable_default": false,
       "meaning": "呼叫端試圖 UPDATE／DELETE append-only 物件（ApprovalRecord、ExecutionAuthorization、AuthorizationUse、ExecutionAttempt、CompletionEvidence、WorkPlan、WorkEvent 等）；正常流程不應觸發，出現代表呼叫端邏輯錯誤而非客戶端可重試的衝突。",
       "source": "ADR 0003; specs/domain/relationships.md 不可變與 append-only 物件; ENG-02 db/migrations forbid_update_delete()"
+    },
+    {
+      "code": "TASK_LEASE_CONTENDED",
+      "http_status": 409,
+      "retryable_default": true,
+      "meaning": "ExecutionTask 目前租約未過期且由另一個 worker 持有；本次 tick 跳過，不視為錯誤，稍後重試同一 task。",
+      "source": "work-execution-contract.md §4/§6.3",
+      "x_added_by": "ENG-05"
+    },
+    {
+      "code": "TASK_ALREADY_DISPATCHED",
+      "http_status": 409,
+      "retryable_default": false,
+      "meaning": "取消命令送到時，該 ExecutionTask 已經 dispatch（或已有終態）；取消只阻止未發出的新動作，已發出的動作交核對流程，不回報已取消成功。",
+      "source": "work-execution-contract.md §6.3/§9 SD-W-11",
+      "x_added_by": "ENG-05"
     }
   ]
 }

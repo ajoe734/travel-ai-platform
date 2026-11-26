@@ -27,3 +27,11 @@ UX 2.1 `localStorage`／`setTimeout` 假後端的前端雛形（`prototypes/merc
 建構在 ENG-01 的 Work／DecisionRequest／ExecutionTask 契約與 ENG-04 的連接器 mock 上。可用
 `python3 -m unittest tests.workbench_service_test -v` 與 `node tests/workbench_frontend_test.cjs` 驗證；
 驗收逐項對照見 [workbench/acceptance-trace.md](workbench/acceptance-trace.md)。
+
+ENG-05 的實際產出在 [fulfillment/](fulfillment/README.md)：第一條接單耐久流程（`services/fulfillment/`），
+把 ENG-02 的 `db/repository`（新增 `work_repository.py`／`fulfillment_repository.py`，擴充
+`execution_repository.py` 的 lease／fence／狀態轉移函式）、ENG-03 的 `decision_request`／`approval_record`
+SQL 與 ENG-04 的 `ExperienceReservationMock` 接成一條可重啟、可核對的 Case → Work → quote → consent →
+mock 預訂 → 核對 → 完成證據流程。可用 `pytest tests/db/test_fulfillment_workflow.py -v`（需真實 Postgres，
+見 [db/README.md 本機無法執行的部分](../db/README.md#本機無法執行的部分)）驗證；驗收逐項對照見
+[fulfillment/acceptance-trace.md](fulfillment/acceptance-trace.md)。
