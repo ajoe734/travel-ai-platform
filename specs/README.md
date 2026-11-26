@@ -10,3 +10,9 @@ ENG-01 的實際產出在 [domain/](domain/README.md)：Case／Complaint／Work�
 Approval／Order 的機器可讀 JSON Schema、共用 ID／金額／error envelope 契約、[關聯圖](domain/relationships.md)、
 [既有狀態對照與不相容理由](domain/version-compatibility.md)及[驗收對照表](domain/acceptance-trace.md)。這些是本輪新增版本，
 不是前一段所述尚未取回的原附件；可用 `python3 -m unittest tests.domain_contract_test -v` 驗證。
+
+ENG-03 的實際產出在 [authorization/](authorization/README.md)：建於上述 domain 契約之上的授權判定服務、
+DecisionRequest API 契約、canonical payload hash 與批准／拒絕／過期／撤回紀錄、執行前再檢查及競態處理，
+程式本體在 [`services/authorization/`](../services/authorization/)；可用
+`python3 -m unittest tests.authorization_service_test -v` 驗證，逐項驗收見
+[authorization/acceptance-trace.md](authorization/acceptance-trace.md)。
