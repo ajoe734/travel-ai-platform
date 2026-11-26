@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>商家助理 · 工作台（正式串接雛形）</title>
+<style>
+:root{--ink:#19352f;--text:#314740;--muted:#566e60;--green:#245d48;--light:#e9f1eb;--paper:#f7f8f4;--line:#dde4dc;--amber:#946020;--amberbg:#fff5e5;--white:#fff;--radius:16px}
+*{box-sizing:border-box}body{margin:0;background:var(--paper);color:var(--text);font-family:system-ui,-apple-system,"PingFang TC","Noto Sans CJK TC","Microsoft JhengHei",sans-serif;font-size:15px;line-height:1.65}
+button,input,textarea,select{font:inherit}button{cursor:pointer;border:0;background:none;color:inherit;min-height:40px}
+h1{font-size:28px;color:var(--ink)}h2{font-size:19px;color:var(--ink)}h3{font-size:15px;color:var(--ink)}
+.shell{max-width:760px;margin:auto;padding:28px 24px}
+.banner{font-size:12px;color:#53655b;background:#e9ede7;padding:8px 24px}
+.card{border:1px solid var(--line);border-radius:var(--radius);background:#fff;padding:20px;margin:16px 0}
+.badge{display:inline-flex;gap:5px;padding:3px 9px;border-radius:7px;background:var(--light);font-size:11px;color:var(--green)}
+.badge.wait{background:var(--amberbg);color:var(--amber)}
+.badge.gray{background:#edf0ec;color:#66736c}
+.primary{background:var(--green);color:#fff;border-radius:9px;padding:9px 16px;font-size:14px}
+.secondary{border:1px solid var(--line);background:#fff;border-radius:9px;padding:9px 16px;font-size:14px}
+input,textarea,select{border:1px solid #ccd7ca;border-radius:8px;padding:8px 10px;width:100%}
+label{display:block;font-size:12px;color:var(--muted);margin:10px 0 4px}
+.error{color:#a44236;font-size:12px;margin-top:6px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.statusline{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid var(--line)}
+.statusline:last-child{border-bottom:0}
+.empty{color:var(--muted);font-size:13px}
+</style>
+</head>
+<body>
+<div class="banner">工作台正式串接雛形 · 呼叫 specs/workbench/api-contract.md 定義的 API，不使用 localStorage 或計時器模擬執行結果</div>
+<div class="shell">
+  <h1>商家助理 · 工作台</h1>
+  <div id="globalError" class="error"></div>
+  <section id="proposeForm" class="card">
+    <h2>交代一件新的服務改版</h2>
+    <label for="wbContent">用你的話說明這次要新增或調整的服務</label>
+    <textarea id="wbContent" rows="3" placeholder="例如：可以另外做兩款茶品飲，不含實作。平日14:00，每人680元，最多6人。"></textarea>
+    <div class="row">
+      <div style="flex:1"><label for="wbName">服務名稱</label><input id="wbName"></div>
+      <div style="flex:1"><label for="wbPrice">每人價格（新台幣）</label><input id="wbPrice" type="number" min="1"></div>
+    </div>
+    <div class="row">
+      <div style="flex:1"><label for="wbDuration">時長（分鐘）</label><input id="wbDuration" type="number" min="15" max="300"></div>
+      <div style="flex:1"><label for="wbCapacity">最多幾人（示範上限 8）</label><input id="wbCapacity" type="number" min="1" max="8"></div>
+    </div>
+    <div class="row">
+      <div style="flex:1"><label for="wbTimes">可開時段</label><input id="wbTimes" placeholder="平日 14:00"></div>
+      <div style="flex:1"><label for="wbOnsite">現場接待</label><input id="wbOnsite" placeholder="中文示範＋英文說明卡"></div>
+    </div>
+    <div id="proposeError" class="error"></div>
+    <div class="row" style="margin-top:14px"><button class="primary" data-act="propose">交給助理整理</button></div>
+  </section>
+  <section id="homeList"></section>
+</div>
+<script>
+'use strict';
+// Demo fixture identifiers only -- a real deployment derives tenant_id/case_id
+// from a verified session, never a client-supplied constant (specs/domain
+// common/identifiers.schema.json#/$defs/ActorRef).
+const TENANT_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const CASE_ID = { tenant_id: TENANT_ID, id: '00000000-0000-4000-8000-000000000001' };
+const ACTOR = { actor_kind: 'EMPLOYEE', actor_id: '00000000-0000-4000-8000-0000000000e1' };
+
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// No localStorage anywhere: state is purely a render cache of the last
+// server read. Reloading this page (or a test harness re-instantiating the
+// script) calls refresh() again and shows whatever the server currently
+// holds -- this is what makes a refresh resume the work instead of losing
+// it (backlog ENG-06 acceptance: 刷新可恢復工作), unlike the UX 2.1
+// prototype's localStorage-held client state
+// (docs/verification/prototype-audit.md §6.1).
+let homeItems = [];
+let pollHandle = null;
+
+function setError(message) { $('globalError').textContent = message || ''; }
+
+function validateProposal(fields) {
+  if (!fields.content || fields.content.trim().length < 10) return '請補充新服務內容（至少 10 個字）。';
+  if (!fields.name) return '請填寫服務名稱。';
+  const price = Number(fields._priceInput);
+  if (!Number.isFinite(price) || price < 1) return '每人價格需至少 1 元。';
+  if (!Number.isInteger(fields.duration_minutes) || fields.duration_minutes < 15 || fields.duration_minutes > 300) return '時長需為 15 至 300 分鐘。';
+  if (!Number.isInteger(fields.capacity) || fields.capacity < 1 || fields.capacity > 8) return '示範容量需為 1 至 8 人。';
+  if (!fields.available_times) return '請填寫可開時段。';
+  if (!fields.onsite_note) return '請填寫現場接待說明。';
+  return null;
+}
+
+async function refresh() {
+  const res = await fetch(`/v1/workbench/home?tenant_id=${TENANT_ID}`);
+  if (!res.ok) { setError('無法讀取工作狀態（' + res.status + '）'); return; }
+  homeItems = await res.json();
+  setError('');
+  render();
+}
+
+function channelLine(channel, display) {
+  const label = { not_started: '尚未開始', pending: '核對中', live: '已生效', rejected: '已拒絕', cancelled: '已取消' }[display] || display;
+  const cls = display === 'live' ? '' : display === 'rejected' ? 'wait' : 'gray';
+  return `<div class="statusline"><span>${esc(channel)}</span><span class="badge ${cls}">${esc(label)}</span></div>`;
+}
+
+function renderWorkStatus(ws) {
+  if (ws.status === 'COMPLETED') {
+    return `<div class="card"><span class="badge">已完成</span>${Object.entries(ws.channels).map(([c, s]) => channelLine(c, s)).join('')}</div>`;
+  }
+  if (ws.status === 'PARTIAL') {
+    const incomplete = ws.partial_summary.incomplete_items.map((i) => `${esc(i.item)}：${esc(i.reason)}`).join('；');
+    return `<div class="card"><span class="badge wait">部分完成</span><p class="empty">已完成：${esc(ws.partial_summary.completed_items.join('、'))}；未完成：${esc(incomplete)}</p>${Object.entries(ws.channels).map(([c, s]) => channelLine(c, s)).join('')}</div>`;
+  }
+  if (ws.status === 'FAILED') {
+    return `<div class="card"><span class="badge wait">失敗</span><p class="empty">${esc(ws.failure.reason)}</p></div>`;
+  }
+  if (ws.status === 'CANCELLED') {
+    return `<div class="card"><span class="badge gray">已取消</span><p class="empty">${esc(ws.cancellation.reason)}</p></div>`;
+  }
+  // RUNNING / WAITING_EXTERNAL: never show a channel as live until the
+  // server's own task status says DONE (backlog ENG-06 acceptance: 後端仍
+  // pending 時首頁不顯示已成功).
+  return `<div class="card"><span class="badge wait">核對中，不需要你操作</span>${Object.entries(ws.channels).map(([c, s]) => channelLine(c, s)).join('')}</div>`;
+}
+
+function renderDecisionCard(item) {
+  const card = item.decision_card;
+  const payload = card.display_payload;
+  return `<div class="card">
+    <span class="badge wait">等待你的核准</span>
+    <h2>${esc(payload.name)}</h2>
+    <p>${esc(payload.content)}</p>
+    <p class="empty">每人 NT$${esc(String(Number(payload.price.amount_minor_units) / 100))}　·　${esc(String(payload.duration_minutes))} 分鐘　·　最多 ${esc(String(payload.capacity))} 人　·　${esc(payload.available_times)}</p>
+    <div class="row" style="margin-top:12px">
+      <button class="primary" data-act="decide" data-work="${esc(item.work_id)}" data-decision="${esc(card.decision_id)}" data-option="approve" data-revision="${esc(String(card.revision))}" data-hash="${esc(card.payload_hash)}">核准並發布</button>
+      <button class="secondary" data-act="decide" data-work="${esc(item.work_id)}" data-decision="${esc(card.decision_id)}" data-option="defer" data-revision="${esc(String(card.revision))}" data-hash="${esc(card.payload_hash)}">先不核准</button>
+    </div>
+  </div>`;
+}
+
+function renderMissingInput(item) {
+  const needsAsset = item.missing_fields.includes('asset_ref');
+  return `<div class="card">
+    <span class="badge wait">需要你補一份說明</span>
+    <h3>${esc(item.objective)}</h3>
+    ${needsAsset ? `<div class="row" style="margin-top:10px">
+      <button class="secondary" data-act="provide-asset" data-work="${esc(item.work_id)}">使用示範素材</button>
+      <button class="secondary" data-act="waive-asset" data-work="${esc(item.work_id)}">先不提供英文版</button>
+    </div>` : `<div class="row" style="margin-top:10px"><button class="primary" data-act="request-decision" data-work="${esc(item.work_id)}">查看確認卡</button></div>`}
+  </div>`;
+}
+
+function render() {
+  if (!homeItems.length) {
+    $('homeList').innerHTML = '<p class="empty">目前沒有需要你處理的工作。</p>';
+    return;
+  }
+  $('homeList').innerHTML = homeItems.map((item) => {
+    if (item.status === 'WAITING_INPUT') return renderMissingInput(item);
+    if (item.status === 'WAITING_DECISION') return renderDecisionCard(item);
+    return renderWorkStatus(item.work_status);
+  }).join('');
+}
+
+async function post(path, body) {
+  const res = await fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(payload.detail || `${res.status}`);
+    err.code = payload.code;
+    err.status = res.status;
+    throw err;
+  }
+  return payload;
+}
+
+async function handle(act, el) {
+  try {
+    if (act === 'propose') {
+      const fields = {
+        name: $('wbName').value.trim(),
+        content: $('wbContent').value.trim(),
+        _priceInput: $('wbPrice').value,
+        duration_minutes: Number($('wbDuration').value),
+        capacity: Number($('wbCapacity').value),
+        available_times: $('wbTimes').value.trim(),
+        onsite_note: $('wbOnsite').value.trim(),
+      };
+      const problem = validateProposal(fields);
+      if (problem) { $('proposeError').textContent = problem; return; }
+      $('proposeError').textContent = '';
+      await post('/v1/workbench/works', {
+        tenant_id: TENANT_ID, case_id: CASE_ID, actor: ACTOR, merchant_text: fields.content,
+        fields: {
+          name: fields.name, content: fields.content,
+          price: { amount_minor_units: String(Math.round(Number(fields._priceInput) * 100)), currency: 'TWD', currency_scale_ref: 'twd-v1' },
+          duration_minutes: fields.duration_minutes, capacity: fields.capacity,
+          available_times: fields.available_times, onsite_note: fields.onsite_note, channels: ['WEB', 'PARTNER'],
+        },
+      });
+      await refresh();
+      return;
+    }
+    if (act === 'provide-asset' || act === 'waive-asset') {
+      const body = act === 'provide-asset' ? { asset_ref: 'asset-demo-card', rights_confirmed: true } : { asset_waived: true };
+      await post(`/v1/workbench/works/${el.dataset.work}/input`, { tenant_id: TENANT_ID, ...body });
+      await refresh();
+      return;
+    }
+    if (act === 'request-decision') {
+      await post(`/v1/workbench/works/${el.dataset.work}/request-decision`, { tenant_id: TENANT_ID });
+      await refresh();
+      return;
+    }
+    if (act === 'decide') {
+      await post(`/v1/workbench/decisions/${el.dataset.decision}/submit`, {
+        tenant_id: TENANT_ID, selected_option_id: el.dataset.option,
+        if_match_revision: Number(el.dataset.revision), if_match_payload_hash: el.dataset.hash,
+      });
+      await refresh();
+      return;
+    }
+  } catch (err) {
+    setError(err.code === 'AUTHORIZATION_STALE' ? '這張確認卡的內容已經變動，請重新整理後再確認一次。' : (err.message || String(err)));
+    await refresh();
+  }
+}
+
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]');
+  if (el) { e.preventDefault(); handle(el.dataset.act, el); }
+});
+
+// Polling, not a fake completion timer: this calls the SAME GET endpoint a
+// manual page refresh would, and only ever reflects whatever the server
+// currently holds (backlog ENG-06 acceptance: 正常工作不用商家逐步按執行按鈕 --
+// there is no per-channel "execute" action here at all, only this one
+// read-only poll of server-driven progress).
+function startPolling(intervalMs) { stopPolling(); pollHandle = setInterval(refresh, intervalMs); }
+function stopPolling() { if (pollHandle) { clearInterval(pollHandle); pollHandle = null; } }
+
+// Exposed only for the Node test harness (tests/workbench_frontend_test.cjs);
+// not an application/backend API, same convention as ux-v2.1's
+// window.uxPrototype.
+window.workbench = { refresh, handle, startPolling, stopPolling, getHomeItems: () => JSON.parse(JSON.stringify(homeItems)) };
+refresh();
+</script>
+</body>
+</html>
