@@ -10,3 +10,8 @@ ENG-01 的實際產出在 [domain/](domain/README.md)：Case／Complaint／Work�
 Approval／Order 的機器可讀 JSON Schema、共用 ID／金額／error envelope 契約、[關聯圖](domain/relationships.md)、
 [既有狀態對照與不相容理由](domain/version-compatibility.md)及[驗收對照表](domain/acceptance-trace.md)。這些是本輪新增版本，
 不是前一段所述尚未取回的原附件；可用 `python3 -m unittest tests.domain_contract_test -v` 驗證。
+
+ENG-04 的實際產出在 [connector/](connector/README.md)：供應商中立的 typed SDK（`connectors/`）與三個固定行為的
+mock connector，對照 [SD connector-result-and-reconciliation.md](../docs/sd/connector-result-and-reconciliation.md)。
+可用 `python3 -m unittest tests.connector_contract_test -v` 驗證；驗收逐項對照見
+[connector/acceptance-trace.md](connector/acceptance-trace.md)。
