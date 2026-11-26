@@ -17,7 +17,7 @@ connector；凡此類未驗項在下表「未驗項與具體限制」欄明列�
 | SA 需求編號可追溯 | 全部 `specs/domain/*.schema.json` 的 `x_origin.sa_trace`／`sd_trace` | 新：每個實體 schema 都有非空的 `sa_trace`/`sd_trace`（FR/BR/SM/ADR 編號） | `python3 -m unittest tests.domain_contract_test.TraceabilityPresence -v` → exit 0 | 只檢查欄位存在且非空，不代表每個追溯編號本身在 SA 原文確實存在（人工核對見下方「交叉核對」） |
 | Case/Complaint/Work/ExecutionTask/ExecutionAttempt/DecisionRequest/Approval/Order 的關聯 | `work-execution-contract.md §1`、`authorization-and-approval.md §1/§5`；`specs/domain/relationships.md` | 新：逐關聯 cardinality 與外鍵表，對照 SD 的 mermaid ERD | 文件核對 + `tests/domain_contract_test.py` 的跨實例測試（見上列各項） | 無 |
 | 共用 ID、金額／幣別、版本、狀態、error envelope | `common/identifiers.schema.json`、`common/money.schema.json`、`common/error-envelope.schema.json`、`error-codes.json` | 新：8 個實體 schema 全部透過 `$ref` 使用同一組共用型別，而非各自定義 | `python3 -m unittest tests.domain_contract_test.SchemaItselfIsValid tests.domain_contract_test.ErrorCodeRegistryConsistency -v` → exit 0 | 無 |
-| 新的機器可讀 schema 與版本轉換說明 | 全目錄 | 新：11 個 `*.schema.json`（Draft 2020-12）+ `version-compatibility.md` | `python3 -m unittest tests.domain_contract_test -v` → 12 tests, exit 0 | 無 |
+| 新的機器可讀 schema 與版本轉換說明 | 全目錄 | 新：11 個 `*.schema.json`（Draft 2020-12）+ `version-compatibility.md` | `python3 -m unittest tests.domain_contract_test -v` → 13 tests, exit 0（R1 退修後新增 `FixtureCoverage`，12 → 13；見下方「R1 退修逐項驗證」） | 無 |
 | 每個契約註明新增版本及來源，不取代仍未找回的原附件 | 全部 schema 檔 `x_origin` 區塊；`specs/README.md` | 新：每個 schema 檔 `x_origin.replaces_recovered_attachment = false`；`specs/README.md` 已有連結指回本目錄 | 人工核對 `x_origin` 欄位；見下方交叉核對命令 | 無 |
 
 ## 交叉核對命令與結果
@@ -80,3 +80,12 @@ work.schema.json ['FR-25', 'SM-01', '08.2']
 （避免再次佔用 30 分鐘且無產出）；上表已改用靜態條文比對頂替，依 §0.7「若無法重現，記錄缺少的具體條件與已有
 靜態證據」處理。本輪已完成且確實執行成功、取得逐字輸出的指令（`python3 -m unittest tests.domain_contract_test -v`、
 `python3 scripts/validate_repository.py`、`python3 -c "print(len('f'*64))"`）皆針對修正後的新版本，退出碼與結果如上表所列。
+
+## R2 退修逐項驗證（Antigravity review，candidate `c6d362229c87f280c6e171cb64636ea65cf9b40f`）
+
+依 AI_COLLABORATION_GUIDE.md §0.7，逐項記錄 R2 審查的 1 個 finding（F7：R1 F3 修復引入的新回歸，非同一缺陷連續退修）。
+本輪動態重現對新舊兩版 schema 都成功執行（未再遇到 R1 節所述的逾時阻擋）。
+
+| Finding | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼與證據位置 | 未驗項與具體限制 |
+|---|---|---|---|---|
+| F7 | `specs/domain/execution-task.schema.json` L95-102（`allOf` 第二項）：`if` 加入 `properties.kind.const=ACTION`，使「有 `authorization_use_id` 則必有 `manifest_item_id`」只對 `kind=ACTION` 生效；同步更新 L81/L76 的欄位說明文字 | 舊版（R2 review 當時的 `c6d3622`）`if` 只檢查 `required:["authorization_use_id"]`，不分 `kind`：對 `kind=GROUP` 且帶 `authorization_use_id`、無 `manifest_item_id` 的根任務（SD authorization-and-approval.md §5：ExecutionAuthorization 的 AuthorizationUse 消耗到整個 manifest 的 root task，根任務本身不綁定單一 manifest item）也強制要求 `manifest_item_id`，動態驗證回 `"'manifest_item_id' is a required property"`。新版：同一 instance（新增 fixture `examples/execution-task/task-group-root-authorization-no-manifest-item-valid.json`，`kind=GROUP`、`status=PARTIAL`、`operation=publication.batch`、有 `authorization_use_id`、無 `manifest_item_id`）通過；新增 `examples/execution-task/task-invalid-action-authorization-without-manifest-item.json`（`kind=ACTION`、有 `authorization_use_id`、無 `manifest_item_id`）仍被拒絕，證明修復只縮小適用範圍、沒有整體移除此約束 | 動態重現腳本：對 `task-group-root-authorization-no-manifest-item-valid.json` 分別用 `git show c6d3622:specs/domain/execution-task.schema.json`（舊版）與工作樹現版建立 `jsonschema.Draft202012Validator` 驗證同一 instance；舊版輸出 `["'manifest_item_id' is a required property"]`，新版輸出 `[]`。`task-invalid-action-authorization-without-manifest-item.json` 用新版驗證輸出 `["'manifest_item_id' is a required property"]`（新舊版皆拒絕，非本輪修復範圍）。`python3 -m unittest tests.domain_contract_test -v` → 13 tests, exit 0（兩個新 fixture 已併入 `FIXTURES`，`FixtureCoverage` 一併核對無遺漏）；`python3 scripts/validate_repository.py` → `Repository checks: passed` | 「子任務 manifest_item_id 指向的那一筆 `scope_manifest` 項目與該任務實際 operation/resource/version/channel/account/amount/purpose/expiry 一致」的交叉核對仍屬 ENG-02/03/05/08 執行期邏輯，本輪只修正 schema 層的 kind 適用範圍，不新增跨檔案的 Python 級交叉檢查 |

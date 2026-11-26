@@ -78,7 +78,7 @@
     "manifest_item_id": {
       "type": "string",
       "minLength": 1,
-      "description": "SD authorization-and-approval.md §5: the one scope_manifest item_id (ApprovalRecord/ExecutionAuthorization) this task is executing. Required alongside authorization_use_id (see allOf below) so the pre-dispatch check can confirm operation/resource/version/channel/account/amount/purpose/expiry all come from this exact manifest item, not a different one in the same approval."
+      "description": "SD authorization-and-approval.md §5: the one scope_manifest item_id (ApprovalRecord/ExecutionAuthorization) this task is executing. Required alongside authorization_use_id on a kind='ACTION' task (see allOf below) so the pre-dispatch check can confirm operation/resource/version/channel/account/amount/purpose/expiry all come from this exact manifest item, not a different one in the same approval. A kind='GROUP' root task may carry authorization_use_id for the whole manifest without a single manifest_item_id; its children's manifest_item_id values are what the manifest is actually scoped to."
     },
     "deadline": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
     "next_run_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
@@ -93,8 +93,12 @@
       "else": true
     },
     {
-      "if": { "required": ["authorization_use_id"] },
-      "then": { "required": ["manifest_item_id"] }
+      "if": {
+        "properties": { "kind": { "const": "ACTION" } },
+        "required": ["kind", "authorization_use_id"]
+      },
+      "then": { "required": ["manifest_item_id"] },
+      "description": "SD authorization-and-approval.md §5: only a child ACTION task consuming an AuthorizationUse must pin the single scope_manifest item_id it is executing. A GROUP root task consumes the AuthorizationUse for the whole manifest and coordinates multiple manifest items, so it is never required to carry one manifest_item_id itself."
     }
   ]
 }

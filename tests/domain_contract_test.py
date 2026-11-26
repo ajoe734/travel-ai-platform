@@ -97,6 +97,8 @@ FIXTURES = [
     (DOMAIN / "execution-task.schema.json", None, EXAMPLES / "execution-task/task-2-notification-valid.json", True),
     (DOMAIN / "execution-task.schema.json", None, EXAMPLES / "execution-task/task-invalid-partial-on-action.json", False),
     (DOMAIN / "execution-task.schema.json", None, EXAMPLES / "execution-task/task-crosstenant-parent-ref.json", True),  # shape-valid; tenant match is a Python-level check below
+    (DOMAIN / "execution-task.schema.json", None, EXAMPLES / "execution-task/task-group-root-authorization-no-manifest-item-valid.json", True),  # R2 F7: a GROUP root task consumes the AuthorizationUse for the whole manifest and must not be forced to pin a single manifest_item_id
+    (DOMAIN / "execution-task.schema.json", None, EXAMPLES / "execution-task/task-invalid-action-authorization-without-manifest-item.json", False),  # R2 F7: an ACTION task consuming an AuthorizationUse must still pin its manifest_item_id
 
     (DOMAIN / "execution-attempt.schema.json", None, EXAMPLES / "execution-attempt/attempt-1-timeout-valid.json", True),
     (DOMAIN / "execution-attempt.schema.json", None, EXAMPLES / "execution-attempt/attempt-2-reconcile-valid.json", True),
