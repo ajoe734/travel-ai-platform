@@ -1,0 +1,18 @@
+{
+  "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "id": "00000000-0000-4000-8000-000000000205",
+  "work_id": { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000101" },
+  "kind": "GROUP",
+  "operation": "publication.batch",
+  "business_key": "publication:batch:offer-1:v3",
+  "request_hash": "0eb64653945a07e8c47074b6cf6629f2e942294fe0fa9730e9c351b4b8e200f2",
+  "request_snapshot": { "offer_id": "offer-1", "channels": ["channel-a", "channel-b", "channel-c"] },
+  "status": "PARTIAL",
+  "revision": 2,
+  "owner_revision": 0,
+  "postcondition_version": "publication-batch-postcondition-v1",
+  "postcondition": { "requires": ["all_child_tasks_terminal"] },
+  "authorization_use_id": { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000702" },
+  "created_at": "2026-11-26T08:00:00Z",
+  "updated_at": "2026-11-26T08:05:00Z"
+}

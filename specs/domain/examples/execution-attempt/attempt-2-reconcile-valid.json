@@ -1,0 +1,20 @@
+{
+  "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "id": "00000000-0000-4000-8000-000000000302",
+  "task_id": { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000201" },
+  "attempt_no": 2,
+  "attempt_kind": "RECONCILE",
+  "fence_token": 2,
+  "request_hash": "a3c2e1f4b5d6a7c8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2",
+  "started_at": "2026-11-20T02:12:00Z",
+  "observations": [
+    {
+      "sequence": 1,
+      "observed_at": "2026-11-20T02:12:30Z",
+      "transport_result": "RESPONSE_RECEIVED",
+      "external_ref": "supplier-booking-ref-77421",
+      "evidence_ref": "evidence-1",
+      "outcome": "SUCCEEDED"
+    }
+  ]
+}

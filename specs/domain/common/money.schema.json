@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/domain/v1/common/money.schema.json",
+  "title": "Shared Money and currency contract",
+  "description": "ENG-01 new contract. Source: SA 08.1 (bigint minor units; currency/precision not assumed) 與 SD authorization-and-approval.md §3.1 (decimal integer string, no float) 與 SD credit-and-refund.md §2. 本檔固定跨 ENG-02/07/08 共用的金額型別，不核定任何商家費率或額度。",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "replaces_recovered_attachment": false
+  },
+  "$defs": {
+    "CurrencyCode": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO 4217 alphabetic currency code. Precision/decimal places are NOT assumed to be 2; see CurrencyScaleRef."
+    },
+    "CurrencyScaleRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100,
+      "description": "Reference to the versioned currency/connector configuration that defines minor-unit scale for a currency (SD credit-and-refund.md §2: 'not all currencies are two decimals'). Not a literal decimal count, because scale is a configured, versioned fact, not a constant baked into this schema."
+    },
+    "MinorUnitsAmount": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)$",
+      "description": "Non-negative integer amount in the currency's minor unit, carried as a decimal string to avoid cross-language integer precision loss for large values (SD authorization-and-approval.md §3.1). No sign, no leading zero, no decimal point."
+    },
+    "SignedMinorUnitsAmount": {
+      "type": "string",
+      "pattern": "^(0|-?[1-9][0-9]*)$",
+      "description": "Same encoding as MinorUnitsAmount but permits a leading '-' for ledger entries that must express direction explicitly in computation (e.g. reconciliation deltas). Domain ledgers still record entry_type rather than relying on sign alone (SD credit-and-refund.md §6.2). Zero has exactly one representation ('0'); '-0' is rejected because it would let two byte-distinct strings claim the same value, breaking canonical-hash determinism (SD authorization-and-approval.md §3.2)."
+    },
+    "Money": {
+      "type": "object",
+      "description": "A single currency amount. Two Money values with different currency codes are never summed directly (SD credit-and-refund.md §2).",
+      "additionalProperties": false,
+      "required": ["amount_minor_units", "currency", "currency_scale_ref"],
+      "properties": {
+        "amount_minor_units": { "$ref": "#/$defs/MinorUnitsAmount" },
+        "currency": { "$ref": "#/$defs/CurrencyCode" },
+        "currency_scale_ref": { "$ref": "#/$defs/CurrencyScaleRef" }
+      }
+    },
+    "NamedRatio": {
+      "type": "object",
+      "description": "A proportion expressed as named numerator/denominator or an exact decimal string; float is prohibited (SD authorization-and-approval.md §3.1). Exactly one representation per instance.",
+      "properties": {
+        "numerator": { "type": "integer", "minimum": 0 },
+        "denominator": { "type": "integer", "minimum": 1 },
+        "decimal_string": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.[0-9]+$"
+        }
+      },
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": ["numerator", "denominator"],
+          "not": { "required": ["decimal_string"] }
+        },
+        {
+          "required": ["decimal_string"],
+          "not": { "anyOf": [{ "required": ["numerator"] }, { "required": ["denominator"] }] }
+        }
+      ]
+    }
+  }
+}

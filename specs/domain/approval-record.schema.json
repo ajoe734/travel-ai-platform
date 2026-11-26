@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/domain/v1/approval-record.schema.json",
+  "title": "Approval (ApprovalRecord, ApprovalRevocation, CustomerConsent, ExecutionAuthorization, AuthorizationUse)",
+  "description": "ENG-01 new contract covering the backlog's 'Approval' relation as one family of append-only objects. Source: ADR 0003 與 SD authorization-and-approval.md §1,§2,§5,§6. ApprovalRecord/CustomerConsent/ExecutionAuthorization/AuthorizationUse/ApprovalRevocation are each immutable once written; `revoked_at` is never a column on ApprovalRecord itself, only a read-model projection computed from ApprovalRevocation records (ADR 0003).",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "sa_trace": ["BR-05", "BR-06", "BR-07", "BR-09", "BR-10", "03.1", "08.2"],
+    "sd_trace": ["authorization-and-approval.md §1,§2,§5,§6", "ADR 0003"],
+    "replaces_recovered_attachment": false
+  },
+  "$defs": {
+    "CustomerConsent": {
+      "type": "object",
+      "description": "SD §2: immutable; bound to one specific target/hash/revision/purpose; never issued by a model (SA BR-05).",
+      "additionalProperties": false,
+      "required": [
+        "tenant_id", "id", "case_id", "subject", "target_type", "target_id",
+        "target_revision", "target_hash", "purpose", "confirmation_nonce_id",
+        "evidence_ref", "issued_at"
+      ],
+      "properties": {
+        "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+        "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+        "case_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+        "subject": { "$ref": "common/identifiers.schema.json#/$defs/ActorRef" },
+        "target_type": { "type": "string", "minLength": 1 },
+        "target_id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+        "target_revision": { "type": "integer", "minimum": 1 },
+        "target_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "purpose": { "type": "string", "minLength": 1 },
+        "confirmation_nonce_id": { "type": "string", "minLength": 1 },
+        "evidence_ref": { "type": "string", "minLength": 1 },
+        "issued_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+        "expires_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "ApprovalRevocation": {
+      "type": "object",
+      "description": "SD §2/ADR 0003: append-only; never mutates the ApprovalRecord it targets.",
+      "additionalProperties": false,
+      "required": ["tenant_id", "id", "approval_id", "revoked_by", "reason", "effective_at", "created_at"],
+      "properties": {
+        "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+        "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+        "approval_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+        "revoked_by": { "$ref": "common/identifiers.schema.json#/$defs/ActorRef" },
+        "reason": { "type": "string", "minLength": 1 },
+        "effective_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+        "created_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "ExecutionAuthorization": {
+      "type": "object",
+      "description": "SD §2/§5: immutable snapshot of the execution gate; binds to exactly one root business operation.",
+      "additionalProperties": false,
+      "required": [
+        "tenant_id", "id", "work_id", "root_business_key", "capabilities",
+        "manifest_hash", "issued_at"
+      ],
+      "properties": {
+        "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+        "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+        "work_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+        "root_business_key": { "$ref": "common/identifiers.schema.json#/$defs/BusinessOperationKey" },
+        "capabilities": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "resource_refs": { "type": "array", "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" } },
+        "grant_refs": {
+          "type": "array",
+          "minItems": 1,
+          "description": "SD §1: AuthorityGrant/PolicyVersion basis. A pre-approved policy may gate execution without a per-case manual ApprovalRecord (SD §1, SD-A-10); this is the other half of the anyOf below.",
+          "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
+        },
+        "consent_refs": { "type": "array", "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" } },
+        "approval_refs": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
+        },
+        "policy_versions": { "type": "array", "items": { "type": "string" } },
+        "manifest_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "expiry": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+        "issued_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+      },
+      "anyOf": [
+        { "required": ["grant_refs"] },
+        { "required": ["approval_refs"] }
+      ],
+      "x_anyOf_note": "SD §1/§5, SD-A-10, backlog ENG-03: a policy-covered auto-execution needs grant_refs but no manual ApprovalRecord; a one-off decision needs approval_refs. At least one authorization basis is required; neither alone is forced on every gate."
+    },
+    "AuthorizationUse": {
+      "type": "object",
+      "description": "SD §5: binds one ExecutionAuthorization to exactly one root ExecutionTask; UNIQUE per authorization_id (ENG-02 persistence scope). A resend of the same request must find this same use, not create a second one (backlog ENG-01 acceptance pattern reused by SD-A-06).",
+      "additionalProperties": false,
+      "required": ["tenant_id", "id", "authorization_id", "root_task_id", "root_business_key", "request_hash", "used_at"],
+      "properties": {
+        "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+        "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+        "authorization_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+        "root_task_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+        "root_business_key": { "$ref": "common/identifiers.schema.json#/$defs/BusinessOperationKey" },
+        "request_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "used_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+      }
+    }
+  },
+  "description_root": "The root schema validates ApprovalRecord itself; CustomerConsent/ApprovalRevocation/ExecutionAuthorization/AuthorizationUse are validated by $ref-ing the matching $defs entry directly (see tests/domain_contract_test.py).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenant_id", "id", "decision_id", "reviewed_revision", "approved_by",
+    "verified_actor_ref", "approved_payload", "canonicalization_version", "payload_hash",
+    "scope_manifest", "approved_at"
+  ],
+  "properties": {
+    "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+    "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+    "decision_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+    "reviewed_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "UNIQUE(tenant_id, decision_id, reviewed_revision) prevents the same decision revision being approved twice (ENG-02 persistence scope)."
+    },
+    "approved_by": { "$ref": "common/identifiers.schema.json#/$defs/ActorRef" },
+    "verified_actor_ref": { "type": "string", "minLength": 1 },
+    "approved_payload": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "SD §2/§3.1: the exact canonical content payload_hash was computed over (schema/canonicalization version, purpose, target type/ID/revision, amounts, manifest items, etc.). Immutable once written; never derived from a later, possibly different, DecisionRequest revision."
+    },
+    "policy_version": { "type": "string" },
+    "canonicalization_version": { "type": "string", "const": "travel-canonical-json-v1" },
+    "payload_hash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "scope_manifest": {
+      "type": "array",
+      "minItems": 1,
+      "description": "SD §5: explicit manifest items; a child task may only use operations/resources/channels listed here.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["item_id", "operation"],
+        "properties": {
+          "item_id": { "type": "string", "minLength": 1 },
+          "operation": { "type": "string", "minLength": 1 },
+          "resource_ref": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+          "resource_revision": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "SD §5: child-task pre-check 'operation、resource、version、channel/account、amount/currency、用途及有效期均在該 item 內'; version half of that check."
+          },
+          "channel": { "type": "string" },
+          "account": { "type": "string", "description": "SD §5 channel/account half of the per-item pre-check." },
+          "purpose": { "type": "string", "minLength": 1 },
+          "expires_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+          "amount": { "$ref": "common/money.schema.json#/$defs/Money" }
+        }
+      }
+    },
+    "approved_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+    "expires_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+    "confirmation_evidence": { "type": "string" }
+  }
+}

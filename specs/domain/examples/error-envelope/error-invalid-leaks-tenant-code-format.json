@@ -1,0 +1,9 @@
+{
+  "type": "https://contracts.travel-ai-platform.invalid/domain/v1/error-codes.json#not_a_valid_code",
+  "title": "Not found",
+  "status": 404,
+  "detail": "租戶 bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb 下沒有這筆資源",
+  "code": "not_a_valid_code",
+  "trace_id": "00000000-0000-4000-8000-0000000000ab",
+  "retryable": false
+}

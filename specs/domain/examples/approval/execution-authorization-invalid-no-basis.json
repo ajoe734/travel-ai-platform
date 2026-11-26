@@ -1,0 +1,21 @@
+{
+  "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "id": "00000000-0000-4000-8000-000000000652",
+  "work_id": {
+    "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "id": "00000000-0000-4000-8000-000000000104"
+  },
+  "root_business_key": "refund:00000000-0000-4000-8000-000000000a02",
+  "capabilities": [
+    "refund.create"
+  ],
+  "resource_refs": [
+    {
+      "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "id": "00000000-0000-4000-8000-000000000a02"
+    }
+  ],
+  "manifest_hash": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+  "expiry": "2026-11-20T04:00:00Z",
+  "issued_at": "2026-11-20T02:31:00Z"
+}

@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/domain/v1/case.schema.json",
+  "title": "Case",
+  "description": "ENG-01 new contract for the existing SA object. Source: SA FR-03/UC-01/08.4 (接單或營運案件、需求版、下一步、回覆所有權) 與 ADR 0001 (保留 Case，不被 Work 取代). Case keeps its own container lifecycle only; the detailed in-flight workflow state lives on Work (ADR 0001: Work.status 使用 Work 契約的業務狀態) so Case does not carry a second, competing state machine.",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "sa_trace": ["FR-03", "FR-11", "UC-01", "08.4"],
+    "replaces_recovered_attachment": false
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenant_id", "id", "revision", "case_type", "status",
+    "demand_revision", "owner_revision", "current_owner", "next_step",
+    "created_at", "updated_at"
+  ],
+  "properties": {
+    "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+    "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+    "revision": { "$ref": "common/identifiers.schema.json#/$defs/Revision" },
+    "case_type": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z_]*$",
+      "description": "Open classification tag mirroring SA UI-01 filters (接單／客訴／素材／核准／發布). Not an exhaustive enum: new case types are a product decision, not an ENG-01 schema change."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["OPEN", "ARCHIVED"],
+      "description": "Container lifecycle only. OPEN means the case can still receive messages, gain new Work, or have its demand revised. Progress/waiting/decision detail is read from the Case's Work objects, not duplicated here."
+    },
+    "demand_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Bumped every time confirmed demand fields change (SA FR-06/FR-11). Invalidates outstanding Quote/CustomerConsent tied to an older demand_revision."
+    },
+    "owner_revision": { "$ref": "common/identifiers.schema.json#/$defs/OwnerRevision" },
+    "current_owner": {
+      "$ref": "common/identifiers.schema.json#/$defs/ActorRef",
+      "description": "The single valid reply owner (SA FR-03: AI／真人只有一個有效回覆擁有者)."
+    },
+    "next_step": {
+      "type": "object",
+      "description": "SA UI-01 必備資訊：下一步、等待誰、期限。",
+      "additionalProperties": false,
+      "required": ["summary"],
+      "properties": {
+        "summary": { "type": "string", "minLength": 1 },
+        "waiting_on": { "$ref": "common/identifiers.schema.json#/$defs/ActorRef" },
+        "due_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "conversation_refs": {
+      "type": "array",
+      "description": "Conversations linked to this Case via CASE_CONVERSATION (SD work-execution-contract.md §1 ERD). Persistence of the join table is ENG-02 scope; this field only fixes the reference shape.",
+      "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
+    },
+    "complaint_refs": {
+      "type": "array",
+      "description": "Complaints opened against this Case. A Case is not itself a complaint (ADR 0001); this is an optional 0..N relation.",
+      "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
+    },
+    "work_refs": {
+      "type": "array",
+      "description": "Works accepted under this Case. A Case commonly has multiple concurrent Works (quote/booking, reschedule, notification, material intake, catalog revision) per SD work-execution-contract.md §1. This array is a convenience projection; Work.case_id is the authoritative link.",
+      "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
+    },
+    "created_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+    "updated_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "id": "00000000-0000-4000-8000-000000000601",
+  "case_id": { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000001" },
+  "subject": { "actor_kind": "CUSTOMER", "actor_id": "00000000-0000-4000-8000-0000000000c1" },
+  "target_type": "QUOTE",
+  "target_id": "00000000-0000-4000-8000-000000000901",
+  "target_revision": 2,
+  "target_hash": "e7f6c5d8b9f0e1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6",
+  "purpose": "CONFIRM_QUOTE",
+  "confirmation_nonce_id": "nonce-00042",
+  "evidence_ref": "voice-turn-confirmed:turn-18",
+  "issued_at": "2026-11-20T02:08:00Z",
+  "expires_at": "2026-11-20T02:38:00Z"
+}

@@ -1,0 +1,9 @@
+{
+  "type": "https://contracts.travel-ai-platform.invalid/domain/v1/error-codes.json#VERSION_CONFLICT",
+  "title": "Version conflict",
+  "status": 409,
+  "detail": "expected_revision 與目前資源版本不符，請重新讀取差異後再決定。",
+  "code": "VERSION_CONFLICT",
+  "trace_id": "00000000-0000-4000-8000-0000000000aa",
+  "retryable": false
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/domain/v1/common/error-envelope.schema.json",
+  "title": "Shared error envelope (application/problem+json)",
+  "description": "ENG-01 new contract. Source: SA v1.0 08.3 內部 API 共通契約與錯誤碼 (application/problem+json; code, trace_id, retryable; must not leak another tenant's object existence). `code` is an open, registry-governed string rather than a closed enum so later ENG tasks (02-12) can register new codes without a breaking schema change; known codes are listed in error-codes.json and cross-checked by tests/domain_contract_test.py.",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "replaces_recovered_attachment": false
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["type", "title", "status", "code", "trace_id", "retryable"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "format": "uri-reference",
+      "description": "problem+json `type`. Uses the same error-codes.json registry id as `code`; not a resolvable live URL (SA placeholder convention, cf. example.invalid)."
+    },
+    "title": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "integer",
+      "enum": [400, 401, 403, 404, 409, 422, 429, 500, 503]
+    },
+    "detail": {
+      "type": "string",
+      "description": "Human-readable detail. Must not disclose whether a resource belonging to a different tenant exists (SA 08.3 存取與錯誤)."
+    },
+    "instance": {
+      "type": "string",
+      "format": "uri-reference"
+    },
+    "code": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9_]*$",
+      "description": "Registered machine-readable error code, e.g. VERSION_CONFLICT. See error-codes.json for the current registry; registering a new code does not require a schema change."
+    },
+    "trace_id": {
+      "$ref": "identifiers.schema.json#/$defs/Uuid"
+    },
+    "retryable": {
+      "type": "boolean",
+      "description": "Whether the identical request MAY be safely retried as-is. `true` is never authorization to retry a write with a NEW business key (SA BR-08)."
+    },
+    "retry_after_seconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Present only for 429 RATE_LIMITED / 503 SOURCE_UNAVAILABLE style codes; honored instead of a fixed client backoff (SA 04.2)."
+    }
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/domain/v1/order.schema.json",
+  "title": "Order",
+  "description": "ENG-01 new contract fixing only the shared identity, Money and status-domain separation this round requires. Source: SA 04.1/04.2 SM-02 (booking/payment/refund/order 四個狀態域分開) 與 02.2 BR-03. Full Quote/Payment/SupplierBooking/Refund field-level persistence is ENG-02/05/07 scope; Order here is the customer-facing projection a Work points to via WorkContext, never the merged sum of the three source states.",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "sa_trace": ["04.1", "04.2", "SM-02", "BR-03", "BR-14"],
+    "replaces_recovered_attachment": false
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenant_id", "id", "case_id", "quote_id", "status", "revision",
+    "total", "supplier_booking", "payment", "created_at", "updated_at"
+  ],
+  "properties": {
+    "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+    "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+    "case_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+    "quote_id": {
+      "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef",
+      "description": "The immutable Quote snapshot this Order was created from (SA BR-10)."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PENDING", "CONFIRMED", "COMPLETED", "CHANGE_PENDING", "CANCELLED", "EXCEPTION"],
+      "description": "SA SM-02 order domain: the customer-facing projection. Never synthesized by merging booking/payment/refund status into one field (SA 04.2: order 是對客戶投影，不把三個來源狀態合成一個難追查欄位)."
+    },
+    "revision": { "$ref": "common/identifiers.schema.json#/$defs/Revision" },
+    "total": { "$ref": "common/money.schema.json#/$defs/Money" },
+    "supplier_booking": {
+      "type": "object",
+      "description": "SA SM-02 booking domain, kept separate from payment and order status.",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["NOT_REQUESTED", "ON_HOLD", "PENDING", "CONFIRMED", "CANCEL_REQUESTED", "CANCELLED", "EXPIRED", "UNKNOWN"]
+        },
+        "external_ref": { "type": "string" },
+        "connector_account_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+        "hold_expires_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+      }
+    },
+    "payment": {
+      "type": "object",
+      "description": "SA SM-02 payment domain. AUTHORIZED is not CAPTURED; VOIDED releases an authorization and is not a refund.",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": ["NOT_REQUESTED", "PENDING", "AUTHORIZED", "CAPTURED", "VOIDED", "UNKNOWN"]
+        },
+        "collector_account": { "type": "string" },
+        "external_transaction_id": { "type": "string" },
+        "captured_amount": { "$ref": "common/money.schema.json#/$defs/Money" }
+      }
+    },
+    "work_refs": {
+      "type": "array",
+      "description": "Works that reference this Order via WorkContext (ref_kind=ORDER). Order is never itself a Work.",
+      "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
+    },
+    "created_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+    "updated_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+  }
+}

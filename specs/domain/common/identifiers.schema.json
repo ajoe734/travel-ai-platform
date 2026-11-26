@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/domain/v1/common/identifiers.schema.json",
+  "title": "Shared identifiers, revisions and business keys",
+  "description": "ENG-01 new contract. Source: SA v1.0 08.1/08.3 (tenant-scoped primary keys, expected_revision, Idempotency-Key) 與 SD work-execution-contract.md §2/§6。不還原未取得的 01_schema.sql／資料字典.md，本檔是本次新增的機器可讀版本。",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "replaces_recovered_attachment": false
+  },
+  "$defs": {
+    "Uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "Application-generated UUID per SA 08.1; external numeric IDs are never used as this platform's primary key."
+    },
+    "TenantId": {
+      "$ref": "#/$defs/Uuid"
+    },
+    "Id": {
+      "$ref": "#/$defs/Uuid"
+    },
+    "TenantScopedRef": {
+      "type": "object",
+      "description": "(tenant_id, id) composite reference per SA 08.1 and SD §2: every business parent/child/actor/order/policy/approval/asset/connector foreign key carries tenant_id.",
+      "additionalProperties": false,
+      "required": ["tenant_id", "id"],
+      "properties": {
+        "tenant_id": { "$ref": "#/$defs/TenantId" },
+        "id": { "$ref": "#/$defs/Id" }
+      }
+    },
+    "Revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonically increasing per-row revision used as expected_revision / If-Match target (SA BR-09; SD §6.1)."
+    },
+    "OwnerRevision": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Atomically incremented when a human takes over reply ownership from an AI turn (SA 04.4 真人接手; SD work-execution-contract.md §6.3). 0 means never handed off."
+    },
+    "FenceToken": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonically increasing lease fence (SA §03 工作 lease 與副作用; SD §6.3). Must never be reused once superseded."
+    },
+    "BusinessOperationKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[a-z][a-z0-9_.-]*:[A-Za-z0-9_.:-]+$",
+      "description": "Stable business key derived from the business source, e.g. booking:create:<quote_id>, refund:<remedy_action_id> (SD work-execution-contract.md §2). Never regenerated as a random UUID on retry; UNIQUE(tenant_id, operation, business_key) at the persistence layer is ENG-02 scope."
+    },
+    "IdempotencyKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "Client-supplied API idempotency key. Scope for deduplication is (tenant_id, actor_id, operation, idempotency_key) per SD §6.1; distinct from BusinessOperationKey, which survives a changed idempotency key."
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamptz per SA 08.1. Service-local wall-clock meaning (e.g. check-in date) is carried separately with an IANA timezone, not derived from this field."
+    },
+    "IanaTimeZone": {
+      "type": "string",
+      "minLength": 1,
+      "description": "IANA timezone identifier, e.g. Asia/Taipei, stored alongside any service-local date per SA 08.1."
+    },
+    "SchemaVersion": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "description": "Per-contract payload schema version, e.g. \"1.0\" (SA 08.8 event envelope `schema_version`). A minor bump adds optional fields; a major bump is required for any change to an existing field's meaning or type."
+    },
+    "ActorRef": {
+      "type": "object",
+      "description": "Who is acting: AI session, employee, customer or channel principal. Scope and tenant are always derived from a verified credential (SA FR-01, FR-29), never taken from caller-supplied payload.",
+      "additionalProperties": false,
+      "required": ["actor_kind", "actor_id"],
+      "properties": {
+        "actor_kind": {
+          "type": "string",
+          "enum": ["AI_AGENT", "EMPLOYEE", "CUSTOMER", "CHANNEL_PRINCIPAL", "SYSTEM"]
+        },
+        "actor_id": { "$ref": "#/$defs/Id" },
+        "on_behalf_of_case_owner_revision": {
+          "$ref": "#/$defs/OwnerRevision",
+          "description": "Case owner_revision the actor believed was current when it acted; used to detect stale AI turns after a human handoff (SA 04.4)."
+        }
+      }
+    }
+  }
+}
