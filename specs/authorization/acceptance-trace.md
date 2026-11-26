@@ -213,7 +213,7 @@ headRefOid `b1d282d`）三個 job 全數 `pass`：`validate`、`db-migration-lif
 僅確認本次合併未破壞其既有通過狀態）：
 <https://github.com/ajoe734/travel-ai-platform/actions/runs/45879340234>。
 
-## dev 同步（candidate 875a8ea → 待產生新 merge SHA）
+## dev 同步（candidate 875a8ea → 00eabd6）
 
 PR #6 CI 回報 `mergeable: CONFLICTING`（dev 已併入 ENG-06 `5c0ba58`：`services/workbench/*`、
 `prototypes/merchant-assistant/workbench/*`、`tests/workbench_*`，以及 `specs/domain/error-codes.json`
@@ -256,9 +256,15 @@ commit 未修改 `services/authorization/`、`tests/authorization_service_test.p
 `specs/domain/error-codes.json` 的附加式解衝突：保留 ENG-03 四筆 `x_added_by: ENG-03` 條目與
 ENG-06 新增的六筆條目），Round 1/Round 2 的 F1-F8 修正與回歸案例原樣保留。
 
-本 merge commit 將 push origin/claude/eng-03，待 hosted CI 對該 headRefOid 跑完後由 GitHub bus
-收錄結果；本輪未等待即記錄本機證據，merge commit SHA 與 CI 結果由後續 docs commit 補記（同
-前次「dev 同步（candidate 973dcf0 → b1d282d）」後接 `875a8ea` 補記 CI 證據的模式）。
+本 merge commit SHA 為 `00eabd67caef72ac128ded00fca8180e308dd38d`，已 push origin/claude/eng-03。
+PR #6 `mergeStateStatus` 轉為 `CLEAN`、`mergeable: MERGEABLE`。hosted CI（GitHub Actions workflow
+「Repository validation」，對 headRefOid `00eabd6`，兩次觸發 run 45886208542／45886215563 皆對同一
+SHA）六個 job（`validate`／`db-migration-lifecycle`／`db-repository-tests` 各跑兩次）全數 `pass`：
+<https://github.com/ajoe734/travel-ai-platform/actions/runs/45886215563>、
+<https://github.com/ajoe734/travel-ai-platform/actions/runs/45886208542>。merge 後於本 worktree
+重跑 `python3 -m unittest tests.authorization_service_test tests.domain_contract_test
+tests.connector_contract_test -v`：123/123 OK；`python3 scripts/validate_repository.py`：
+231 連結、4 支 JS 腳本全過，計數與合併前一致（本次合併未再新增文件連結）。
 
 ## 未驗項總表（非逐項重複，彙整）
 
