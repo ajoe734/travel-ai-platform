@@ -16,7 +16,7 @@
 |---|---|---|---|---|
 | 已有政策覆蓋時不產生多餘人工作業 | `services/authorization/service.py` `AuthorizationService.try_issue_policy_covered_authorization`（SD §1/§5, SD-A-10） | `tests/authorization_service_test.py::ExecutionAuthorizationTests::test_policy_covered_work_issues_authorization_without_any_decision`（L384）：僅憑 `repository.put_grant` 的 reusable grant 直接核發 `ExecutionAuthorization`，全程未呼叫 `create_decision`；`test_each_work_rechecks_its_own_grant_budget_independently`（L423）證明「每案仍有獨立核對」——第二個 Work 因 grant 預算用盡回 `None`，不是被第一次使用永久鎖死 | `python3 -m unittest tests.authorization_service_test -v` → 62 tests, exit 0 | `AuthorityGrant` 正式 schema／政策管理 UI 不在本輪；此處是 ENG-03 內部最小 dict 替身（見 `repository.py` 模組說明） |
 | 新承諾才需批准（已核准/已存在的內容重送不需要新批准） | `AuthorizationService.approve_decision` 的 idempotency-first 分支（`service.py` L218-226） | `test_same_key_same_payload_replay_returns_the_same_approval`（L313，SD-A-03）：同 key 同 payload 回同一筆 `ApprovalRecord`，未建立第二筆 | 同上 | 無 |
-| 舊 ETag | `approve_decision` 的 `expected_revision`／`if_match_revision` 一致性檢查（`service.py` L210，SD §4、SD-A-02） | `test_old_revision_can_never_be_approved_once_superseded`（L228）：`propose_revision` 把內容改成 B 後，用 A 版核發的舊 nonce 核准，回 `AUTHORIZATION_STALE` | 同上 | `If-Match` header 本身的解析是 ENG-05 handler 範圍；本輪只驗證 `expected_revision`/`if_match_revision` 兩值不一致時拒絕的服務層規則（程式碼見 `service.py` L210），未對該分支另寫獨立測試（與 `expected_revision` 本身過期的檢查共用同一條 `AUTHORIZATION_STALE`/`VERSION_CONFLICT` 路徑，已由其他案例間接覆蓋） |
+| 舊 ETag | `approve_decision` 的 `expected_revision`／`if_match_revision` 一致性檢查（`service.py` L272，SD §4、SD-A-02） | `test_old_revision_can_never_be_approved_once_superseded`（L228）：`propose_revision` 把內容改成 B 後，用 A 版核發的舊 nonce 核准，回 `AUTHORIZATION_STALE`；`test_approve_decision_if_match_revision_mismatch_is_rejected`（Round 2 新增，`tests/authorization_service_test.py::Round2RetrofitTests` L1093）：直接對 `approve_decision` 的 `if_match_revision!=expected_revision` 分支另寫獨立測試，回 `VERSION_CONFLICT` | 同上 | `If-Match` header 本身的解析是 ENG-05 handler 範圍；服務層的 `expected_revision`/`if_match_revision` 不一致檢查現已有直接測試 |
 | 變更金額 | `approve_decision` 同一 Idempotency-Key、不同 `scope_manifest`（含金額變動即屬內容變動）的 `request_hash` 比對（SD-A-04） | `test_same_key_different_amount_is_idempotency_conflict`（L332）：同 key 改 `scope_manifest`（新增一個 manifest item，等同內容/金額變動）回 `IDEMPOTENCY_CONFLICT` | 同上 | 無 |
 | 錯 tenant | `create_decision`／`approve_decision`／`issue_execution_authorization` 的 `tenant_id` 比對（SA 08.3；`CROSS_TENANT_REFERENCE_REJECTED`） | `test_cross_tenant_display_payload_is_rejected`（L202）、`test_approving_another_tenants_decision_id_is_rejected_without_disclosure`（L615）、`test_issuing_authorization_against_another_tenants_grant_is_rejected`（L633） | 同上 | 「不揭露存在性」只驗證回應 code 相同（404 CROSS_TENANT_REFERENCE_REJECTED），未驗證 HTTP 層 detail 文字本身不洩漏，因為本輪沒有 HTTP 層（ENG-05 範圍） |
 | 授權撤回 | `revoke_approval` + `precheck_before_dispatch` 共用 `repository.lock_for` 的競態序（SD §6, SD-A-07/08） | `test_revoke_before_dispatch_blocks_the_not_yet_sent_action`（L530）：撤回先成立，之後的 `precheck_before_dispatch` 回 `AUTHORIZATION_REVOKED`；`test_dispatch_before_revoke_lets_the_inflight_action_proceed_but_blocks_new_ones`（L547）：dispatch 先成立，撤回回 `DISPATCHED_PROCEEDS_TO_RECONCILIATION`（不假稱取消已送出動作），但下一次 `precheck_before_dispatch`（模擬重試）仍被擋下 | 同上 | 本輪的鎖是同進程 `threading.Lock`，模擬 SD §6「短 DB transaction」描述的先後順序；真正跨 worker 行程、跨節點的 DB transaction／lease 是 ENG-02/05 範圍，此處只驗證「先後順序一旦確定，結果正確」這個邏輯本身 |
@@ -48,6 +48,46 @@
 | F7 時間比較與不可變性 | 新增 `services/authorization/temporal.py`（`parse_timestamp`/`is_at_or_before`），取代 `repository.py`/`service.py` 內所有 ISO-8601 字串 `<=` 比較；`repository.py` 將所有 `dict(x)` 回傳/儲存改為 `copy.deepcopy(x)` | `test_revocation_effective_at_with_fractional_seconds_compares_by_real_instant`：`effective_at="...06:00:00Z"`、查詢時間 `"...06:00:00.500Z"`（字串排序上比前者「更小」，但實際時間更晚）；舊版 `is_approval_effective` 誤回 `True`（未判定已撤回）；新版正確回 `False`。`test_returned_approval_scope_manifest_is_a_defensive_copy`：呼叫端就地修改回傳的 `approval["scope_manifest"]`；舊版連帶污染 repository 內部儲存的紀錄；新版內部紀錄不受影響 | 同上 | 無 |
 | F8 契約與驗收證據缺口 | `service.py` `reject_decision` 新增 `if_match_revision` 參數與一致性檢查（比照 `approve_decision`）；`repository.py` 新增 `put_rejection_reason`/`get_rejection_reason` 側錶（`reason` 不寫入 `DecisionRequest` 本體，因其 schema `additionalProperties: false` 沒有 `reason` 屬性） | `test_reject_decision_if_match_revision_mismatch_is_rejected`：舊版 `reject_decision` 沒有 `if_match_revision` 參數，呼叫即拋 `TypeError`（代表該檢查在舊版不存在）；新版回 `VERSION_CONFLICT`。`test_reject_decision_persists_the_reason_for_later_retrieval`：舊版沒有 `get_rejection_reason` 可呼叫；新版可查回 `reason` 且 `reject_decision` 回傳值本身也帶 `reason` | 同上 | `rejected_by`/`reason` 側錶沒有時間戳欄位（`reject_decision` 簽章本身沒有 `rejected_at` 參數，和既有 `approve_decision`/`revoke_approval` 不同，為避免擴大簽章變更範圍未補上）；若未來需要稽核時間，需另外加參數並視為新的驗收項，不在本輪範圍內隱含補上 |
 
+## Round 2 退修對照表（candidate a95af43 → 本候選）
+
+依 [AI_COLLABORATION_GUIDE.md §0.7](../../AI_COLLABORATION_GUIDE.md)「同一缺陷連續兩輪退修」交接格式；
+Antigravity 於 `2026-11-26T16:58:28Z` 以唯讀 probe 對候選 `a95af4386859d0fb29cd906c8a8079e2de90bee6`
+重新實測 Round 1 的 F1-F8，確認 F1/F3/F4/F6/F7/F8(1) 已消除，但 F2/F5/F8(2) 仍殘留（連續兩輪未消除）。
+每項「舊版重現」都已在 `a95af43` 對應的原始碼樹（`git archive a95af43` 匯出到 `/tmp` 隔離目錄，套用本輪新
+測試檔）實跑驗證：`Round2RetrofitTests` 的 7 個新案例中，F2(a)/F2(b)/F5 對應的 3 個案例在舊版全部失敗
+（2 failures + 1 error，error 是舊版在同一 nonce 第二次呼叫時因 nonce 已被第一次呼叫燒毀而拋
+`UNVERIFIED_APPROVAL_REJECTED`，未被測試的 `assertRaises` 範圍捕捉）；F8(2) 對應的 4 個案例
+（`if_match_revision` 不一致、`revoke_grant` 阻斷 issue/precheck/mark）在舊版即已通過——這對應 F8(2)
+的定性：既有程式邏輯本身沒有缺陷，缺的是直接測試覆蓋。本候選套用修正後，全部 7 個案例通過。未改動任何
+工作樹檔案進行此比對（隔離目錄位於 `/tmp`，非 repo 路徑）。
+
+| Finding | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼 | 未驗項與具體限制 |
+|---|---|---|---|---|
+| F2 殘留：執行前 manifest 範圍檢核允許注入未核准欄位且未驗 manifest item 有效期 | `service.py` `_manifest_item_within_scope`（L134-141）：`_SCOPE_BOUND_FIELDS` 比對改為 `item.get(field) != scope_item.get(field)`（取代舊版「只比對 `field in scope_item` 的欄位」），並新增 `is_at_or_before(scope_item["expires_at"], now)` 的獨立過期檢查；呼叫端 `issue_execution_authorization`（L466）補傳 `now` 參數。另於 `_validate_scope_manifest_matches_payload`（L100-116）新增拒絕重複 `item_id`（建議修正範圍內） | `test_authorization_from_approval_rejects_manifest_item_injecting_an_unapproved_channel_and_amount`（L1035）：approval 的 scope_manifest 未宣告 `channel`/`amount`，execution-time manifest 注入 `channel="unapproved_channel_c"` 與 USD 大額 `amount`；舊版因 `channel`/`amount` 不在 scope_item 內而跳過比對，放行核發 `ExecutionAuthorization`；新版回 `AUTHORIZATION_SCOPE_MISMATCH`。`test_authorization_from_approval_rejects_a_scope_item_that_has_expired_by_now`（L1053）：scope_item 與 execution-time manifest item 的 `expires_at` 皆為 `"2026-11-26T05:30:00Z"`（彼此相等），`now="2026-11-26T06:00:00Z"`；舊版只比對欄位是否相等而放行；新版因 scope_item 本身已過期回 `AUTHORIZATION_SCOPE_MISMATCH` | `python3 -m unittest tests.authorization_service_test -v` → 69 tests, exit 0 | `resource_revision`/`account`/`purpose` 欄位走同一段 `_SCOPE_BOUND_FIELDS` 迴圈，與已測的 `channel`/`amount`/`expires_at` 共用同一程式碼路徑，未逐欄位各寫一條獨立測試；重複 `item_id` 拒絕是本輪隨手補的建議修正，未另寫獨立測試（未在 F2 殘留的「必要回歸」清單內） |
+| F5 殘留：approve_decision 仍在 schema 驗證前消耗 nonce | `service.py` `approve_decision`（L333-359）：把 `ApprovalRecord` 字典組裝與 `schema_validation.validate("ApprovalRecord", approval)` 移到 `consume_nonce(nonce_id)`（原 L319）之前 | `test_approve_decision_schema_failure_does_not_burn_the_nonce_for_a_later_valid_retry`（L1079）：以合法 nonce 呼叫 `approve_decision(..., verified_actor_ref="")`，第一次因 `ApprovalRecord.verified_actor_ref` schema 的 `minLength:1` 拋 `ContractShapeError`；緊接用合法 `verified_actor_ref="voice:ok"` 與新 idempotency_key 重試同一 nonce；舊版第二次因 nonce 已於第一次呼叫消耗而回 `UNVERIFIED_APPROVAL_REJECTED`；新版第二次核准成功 | 同上 | 無（與 Round 1 F5 案例共用同一「不可燒毀合法 nonce」原則，本案例額外覆蓋「schema 驗證失敗」這個尚未覆蓋的失敗型態，而非角色/租戶錯誤） |
+| F8(2) 殘留：驗收測試與 acceptance-trace.md 缺口 | (a) `repository.py` `revoke_grant`（L308）；(b) `service.py` `approve_decision` 的 `if_match_revision!=expected_revision` 檢查（L272） | (a) `test_revoke_grant_blocks_issuing_a_new_authorization_from_it`（L1102）、`test_revoke_grant_blocks_precheck_before_dispatch_on_an_authorization_it_backs`（L1119）、`test_revoke_grant_blocks_mark_dispatched_on_an_authorization_it_backs`（L1137）：呼叫 `revoke_grant` 後分別驗證 `issue_execution_authorization`/`precheck_before_dispatch`/`mark_dispatched` 皆回 `AUTHORIZATION_REVOKED`，且 `mark_dispatched` 不標記已送出；(b) `test_approve_decision_if_match_revision_mismatch_is_rejected`（L1093）：對 `approve_decision` 直接傳入不一致的 `if_match_revision`，回 `VERSION_CONFLICT`。這 4 筆在舊版（`a95af43`）即已通過——程式邏輯本身沒有缺陷，純粹是缺測試這個問題本身 | 同上 | 無 |
+
+```bash
+$ python3 -m unittest tests.authorization_service_test tests.domain_contract_test tests.connector_contract_test -v
+...
+Ran 123 tests in 0.242s
+
+OK
+```
+
+```bash
+$ python3 scripts/validate_repository.py
+Repository checks: passed
+Original files verified: 12
+Local documentation links checked: 214
+JavaScript scripts checked: 3
+```
+
+`authorization_service_test`（69/69，含 Round 1 `Round1RetrofitTests` 23/23 與 Round 2
+`Round2RetrofitTests` 7/7）、`domain_contract_test`（13/13）、`connector_contract_test`（41/41）均通過；
+`validate_repository.py` 214 links 不變（本輪只動 `services/authorization/service.py`、
+`tests/authorization_service_test.py`、本文件，未新增文件連結）。
+
 ## SD §8 負向驗收表（authorization-and-approval.md）逐項
 
 | ID | 本輪狀態 | 證據 |
@@ -59,7 +99,7 @@
 | SD-A-05 | 已覆蓋 | `test_authorization_from_approval_rejects_manifest_outside_approved_scope`（L448）：批准只涵蓋 `booking.reschedule`，子任務試圖以 `booking.publish_channel_c` 操作建立授權，回 `AUTHORIZATION_SCOPE_MISMATCH` |
 | SD-A-06 | 已覆蓋 | `test_authorization_use_resend_finds_the_same_use`（L466）：同請求重送找回同一筆 `AuthorizationUse`；`test_authorization_use_cannot_bind_a_second_root_task`（L489）：改綁第二個 root task 回 `AUTHORIZATION_USE_ALREADY_BOUND`，原 root 仍可查回 |
 | SD-A-07 | 已覆蓋 | 見上表「授權撤回」列（`test_revoke_before_dispatch_blocks_the_not_yet_sent_action`） |
-| SD-A-08 | 已覆蓋 | 見上表「授權撤回」列（`test_dispatch_before_revoke_lets_the_inflight_action_proceed_but_blocks_new_ones`） |
+| SD-A-08 | 已覆蓋 | 見上表「授權撤回」列（`test_dispatch_before_revoke_lets_the_inflight_action_proceed_but_blocks_new_ones`，`ApprovalRecord` 撤回案例）；`AuthorityGrant` 撤回（`repository.py` `revoke_grant`，L308）另見 Round 2 退修對照表 F8(2) 列的 3 筆 `Round2RetrofitTests` 案例（`test_revoke_grant_blocks_issuing_a_new_authorization_from_it`、`test_revoke_grant_blocks_precheck_before_dispatch_on_an_authorization_it_backs`、`test_revoke_grant_blocks_mark_dispatched_on_an_authorization_it_backs`） |
 | SD-A-09 | 未覆蓋 | 需要第二語言實作對同一 canonical payload 算 hash 並比對；本輪只有 Python 單一實作。`CanonicalJsonTestVectors`（L113-190）覆蓋 SD §3.2 列出的其餘 8 個最低測試向量（key 排列、陣列順序、金額、null/缺省、Unicode 不默默碰撞、幣別、tenant/target、超大整數），外加 NaN/Infinity、重複 key、float 拒絕、控制字元轉義、`/` 不轉義等本模組自身規則的測試 |
 | SD-A-10 | 已覆蓋 | 見上表「已有政策覆蓋時不產生多餘人工作業」列 |
 | SD-A-11 | 不在本輪範圍 | break-glass 音訊存取屬 ENG-10（語音/電話）範圍，本輪沒有音訊/錄音物件 |

@@ -102,7 +102,15 @@ def _validate_scope_manifest_matches_payload(scope_manifest: list[dict[str, Any]
     not whatever the caller happens to pass to approve_decision."""
     allowed_items = set(display_payload.get("manifest_items", []))
     operation = display_payload.get("operation")
+    seen_item_ids: set[str] = set()
     for item in scope_manifest:
+        if item["item_id"] in seen_item_ids:
+            # A duplicate item_id would let a second, differently-scoped entry for the same
+            # manifest item silently win the item_id -> scope_item lookup at execution time.
+            raise authorization_scope_mismatch(
+                f"scope_manifest item_id {item['item_id']!r} is listed more than once"
+            )
+        seen_item_ids.add(item["item_id"])
         if item["item_id"] not in allowed_items:
             raise authorization_scope_mismatch(
                 f"scope_manifest item {item['item_id']!r} is not one of the approved "
@@ -116,16 +124,22 @@ def _validate_scope_manifest_matches_payload(scope_manifest: list[dict[str, Any]
 
 
 # SD §5: "執行前核對 operation、resource、version、channel/account、amount/currency、用途及有效期均在該
-# item 內" — every one of these fields that the approved scope_manifest item declares is a bound
-# constraint; an execution-time manifest item may not disagree with it (ENG-03 Round 1 fix, finding F2).
+# item 內" — every one of these fields is a bound constraint of the approved scope_manifest item
+# (ENG-03 Round 1 fix, finding F2). Round 2's residual F2 fix: compare with scope_item.get(field)
+# rather than only checking fields the scope_item happens to declare, so an execution-time manifest
+# item cannot *add* a field (e.g. channel/amount) the approval never constrained in the first place.
 _SCOPE_BOUND_FIELDS = ("resource_ref", "resource_revision", "channel", "account", "purpose", "expires_at", "amount")
 
 
-def _manifest_item_within_scope(item: dict[str, Any], scope_item: dict[str, Any]) -> bool:
+def _manifest_item_within_scope(item: dict[str, Any], scope_item: dict[str, Any], now: str) -> bool:
     if item["operation"] != scope_item["operation"]:
         return False
+    if "expires_at" in scope_item and is_at_or_before(scope_item["expires_at"], now):
+        # The approved item itself has gone stale by execution time, independent of whether
+        # the execution-time manifest item's own expires_at field happens to match it.
+        return False
     for field in _SCOPE_BOUND_FIELDS:
-        if field in scope_item and item.get(field) != scope_item[field]:
+        if item.get(field) != scope_item.get(field):
             return False
     return True
 
@@ -316,9 +330,10 @@ class AuthorizationService:
         if selected_option_id not in option_ids:
             raise ValueError(f"selected_option_id {selected_option_id!r} is not one of {sorted(option_ids)}")
 
-        if self.repository.consume_nonce(nonce_id) is None:
-            raise unverified_approval_rejected("confirmation nonce was consumed by a concurrent request")
-
+        # Assemble and schema-validate the would-be ApprovalRecord before consuming the nonce
+        # (finding F5, Round 2): a ContractShapeError here (e.g. a blank verified_actor_ref) is a
+        # caller input problem the caller can retry with a corrected call, and must not burn the
+        # legitimate nonce it was about to retry with.
         approval: dict[str, Any] = {
             "tenant_id": tenant_id,
             "id": approval_id or self._new_id(),
@@ -339,6 +354,9 @@ class AuthorizationService:
         if confirmation_evidence is not None:
             approval["confirmation_evidence"] = confirmation_evidence
         schema_validation.validate("ApprovalRecord", approval)
+
+        if self.repository.consume_nonce(nonce_id) is None:
+            raise unverified_approval_rejected("confirmation nonce was consumed by a concurrent request")
 
         stored, created = self.repository.put_approval_if_absent(approval)
         if not created and stored["id"] != approval["id"]:
@@ -463,7 +481,7 @@ class AuthorizationService:
             scope_by_item_id = {s["item_id"]: s for s in approval["scope_manifest"]}
             for item in manifest:
                 scope_item = scope_by_item_id.get(item["item_id"])
-                if scope_item is None or not _manifest_item_within_scope(item, scope_item):
+                if scope_item is None or not _manifest_item_within_scope(item, scope_item, now):
                     raise authorization_scope_mismatch(
                         f"manifest item {item['item_id']!r} is outside approval {ref['id']}'s scope_manifest "
                         "(operation/resource_ref/resource_revision/channel/account/amount/purpose/expires_at "

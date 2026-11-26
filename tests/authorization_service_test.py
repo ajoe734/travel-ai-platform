@@ -1023,5 +1023,136 @@ class Round1RetrofitTests(unittest.TestCase):
         self.assertEqual(stored["reason"], "customer prefers original date")
 
 
+class Round2RetrofitTests(unittest.TestCase):
+    """Regression tests for the Round 2 review reopen (ai-status ENG-03 reopen, residual
+    findings F2/F5/F8(2)): each test fails against candidate a95af4386859d0fb29cd906c8a8079e2de90bee6
+    and passes against this candidate."""
+
+    # -- F2 residual: issue_execution_authorization let an execution-time manifest item add a
+    #    field the approved scope_item never declared, and did not check a scope_item's own
+    #    expires_at against `now` ---------------------------------------------------------
+
+    def test_authorization_from_approval_rejects_manifest_item_injecting_an_unapproved_channel_and_amount(self):
+        svc = new_service()
+        decision, nonce_id = create_pending_decision(svc)
+        approval = approve_happy_path(svc, decision, nonce_id)  # scope_manifest declares no channel/amount
+        with self.assertRaises(AuthorizationError) as ctx:
+            svc.issue_execution_authorization(
+                tenant_id=TENANT, work_id=_ref(TENANT, "00000000-0000-4000-8000-00000000a001"),
+                root_business_key="booking:reschedule:quote-1", capabilities=["booking.reschedule"],
+                manifest=[{
+                    "item_id": "manifest-item-1", "operation": "booking.reschedule",
+                    "channel": "unapproved_channel_c",
+                    "amount": {"amount_minor_units": "9999999", "currency": "USD", "currency_scale_ref": "iso4217-default-v1"},
+                }],
+                approval_refs=[_ref(TENANT, approval["id"])],
+                issued_at="2026-11-26T06:00:00Z", now="2026-11-26T06:00:00Z",
+            )
+        self.assertEqual(ctx.exception.code, "AUTHORIZATION_SCOPE_MISMATCH")
+
+    def test_authorization_from_approval_rejects_a_scope_item_that_has_expired_by_now(self):
+        svc = new_service()
+        decision, nonce_id = create_pending_decision(svc)
+        approval = approve_happy_path(
+            svc, decision, nonce_id,
+            scope_manifest=[{
+                "item_id": "manifest-item-1", "operation": "booking.reschedule",
+                "expires_at": "2026-11-26T05:30:00Z",
+            }],
+        )
+        with self.assertRaises(AuthorizationError) as ctx:
+            svc.issue_execution_authorization(
+                tenant_id=TENANT, work_id=_ref(TENANT, "00000000-0000-4000-8000-00000000a001"),
+                root_business_key="booking:reschedule:quote-1", capabilities=["booking.reschedule"],
+                manifest=[{
+                    "item_id": "manifest-item-1", "operation": "booking.reschedule",
+                    "expires_at": "2026-11-26T05:30:00Z",
+                }],
+                approval_refs=[_ref(TENANT, approval["id"])],
+                issued_at="2026-11-26T06:00:00Z", now="2026-11-26T06:00:00Z",
+            )
+        self.assertEqual(ctx.exception.code, "AUTHORIZATION_SCOPE_MISMATCH")
+
+    # -- F5 residual: approve_decision still consumed the nonce before schema-validating the
+    #    ApprovalRecord it was about to build, so a shape failure burned a legitimate nonce ----
+
+    def test_approve_decision_schema_failure_does_not_burn_the_nonce_for_a_later_valid_retry(self):
+        svc = new_service()
+        decision, nonce_id = create_pending_decision(svc)
+        with self.assertRaises(Exception):
+            approve_happy_path(svc, decision, nonce_id, verified_actor_ref="")
+        # the nonce must still be usable: the previous call failed ApprovalRecord shape
+        # validation, not nonce consumption.
+        approval = approve_happy_path(
+            svc, decision, nonce_id, verified_actor_ref="voice:ok", idempotency_key="idem-approve-retry-after-shape-failure",
+        )
+        self.assertEqual(approval["reviewed_revision"], 1)
+
+    # -- F8(2) residual: approve_decision's if_match_revision check had no direct test ------
+
+    def test_approve_decision_if_match_revision_mismatch_is_rejected(self):
+        svc = new_service()
+        decision, nonce_id = create_pending_decision(svc)
+        with self.assertRaises(AuthorizationError) as ctx:
+            approve_happy_path(svc, decision, nonce_id, if_match_revision=2)
+        self.assertEqual(ctx.exception.code, "VERSION_CONFLICT")
+
+    # -- F8(2) residual: repository.revoke_grant had zero tests blocking issue/precheck/mark --
+
+    def test_revoke_grant_blocks_issuing_a_new_authorization_from_it(self):
+        svc = new_service()
+        svc.repository.put_grant({
+            "tenant_id": TENANT, "id": "00000000-0000-4000-8000-00000000c050",
+            "capabilities": ["booking.reschedule"], "expiry": "2027-01-01T00:00:00Z", "revoked": False,
+        })
+        svc.repository.revoke_grant(TENANT, "00000000-0000-4000-8000-00000000c050")
+        with self.assertRaises(AuthorizationError) as ctx:
+            svc.issue_execution_authorization(
+                tenant_id=TENANT, work_id=_ref(TENANT, "00000000-0000-4000-8000-00000000a001"),
+                root_business_key="booking:reschedule:quote-1", capabilities=["booking.reschedule"],
+                manifest=[{"item_id": "manifest-item-1", "operation": "booking.reschedule"}],
+                grant_refs=[_ref(TENANT, "00000000-0000-4000-8000-00000000c050")],
+                issued_at="2026-11-26T06:00:00Z", now="2026-11-26T06:00:00Z",
+            )
+        self.assertEqual(ctx.exception.code, "AUTHORIZATION_REVOKED")
+
+    def test_revoke_grant_blocks_precheck_before_dispatch_on_an_authorization_it_backs(self):
+        svc = new_service()
+        svc.repository.put_grant({
+            "tenant_id": TENANT, "id": "00000000-0000-4000-8000-00000000c051",
+            "capabilities": ["booking.reschedule"], "expiry": "2027-01-01T00:00:00Z", "revoked": False,
+        })
+        authorization = svc.issue_execution_authorization(
+            tenant_id=TENANT, work_id=_ref(TENANT, "00000000-0000-4000-8000-00000000a001"),
+            root_business_key="booking:reschedule:quote-1", capabilities=["booking.reschedule"],
+            manifest=[{"item_id": "manifest-item-1", "operation": "booking.reschedule"}],
+            grant_refs=[_ref(TENANT, "00000000-0000-4000-8000-00000000c051")],
+            issued_at="2026-11-26T06:00:00Z", now="2026-11-26T06:00:00Z",
+        )
+        svc.repository.revoke_grant(TENANT, "00000000-0000-4000-8000-00000000c051")
+        with self.assertRaises(AuthorizationError) as ctx:
+            svc.precheck_before_dispatch(tenant_id=TENANT, authorization_id=authorization["id"], now="2026-11-26T06:05:00Z")
+        self.assertEqual(ctx.exception.code, "AUTHORIZATION_REVOKED")
+
+    def test_revoke_grant_blocks_mark_dispatched_on_an_authorization_it_backs(self):
+        svc = new_service()
+        svc.repository.put_grant({
+            "tenant_id": TENANT, "id": "00000000-0000-4000-8000-00000000c052",
+            "capabilities": ["booking.reschedule"], "expiry": "2027-01-01T00:00:00Z", "revoked": False,
+        })
+        authorization = svc.issue_execution_authorization(
+            tenant_id=TENANT, work_id=_ref(TENANT, "00000000-0000-4000-8000-00000000a001"),
+            root_business_key="booking:reschedule:quote-1", capabilities=["booking.reschedule"],
+            manifest=[{"item_id": "manifest-item-1", "operation": "booking.reschedule"}],
+            grant_refs=[_ref(TENANT, "00000000-0000-4000-8000-00000000c052")],
+            issued_at="2026-11-26T06:00:00Z", now="2026-11-26T06:00:00Z",
+        )
+        svc.repository.revoke_grant(TENANT, "00000000-0000-4000-8000-00000000c052")
+        with self.assertRaises(AuthorizationError) as ctx:
+            svc.mark_dispatched(tenant_id=TENANT, authorization_id=authorization["id"], now="2026-11-26T06:05:00Z")
+        self.assertEqual(ctx.exception.code, "AUTHORIZATION_REVOKED")
+        self.assertFalse(svc.repository.is_dispatched(TENANT, authorization["id"]))
+
+
 if __name__ == "__main__":
     unittest.main()
