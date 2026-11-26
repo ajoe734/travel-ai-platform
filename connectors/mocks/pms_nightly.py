@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from ..base import Connector
+from ..errors import CapabilityUnavailableError
 from ..idempotency import IdempotencyStore, request_hash
 from ..types import (
     AuthorizationState,
@@ -19,6 +20,8 @@ from ..types import (
     Failed,
     IdempotencySupport,
     LookupSupport,
+    MerchantConsentState,
+    OperationalAvailability,
     OperationResult,
     SideEffect,
     SideEffectDisposition,
@@ -36,6 +39,8 @@ def _capabilities() -> dict[str, CapabilityDescriptor]:
             capability_key="availability.read",
             support=SupportLevel.SUPPORTED,
             authorization_state=AuthorizationState.ACTIVE,
+            merchant_consent=MerchantConsentState.GRANTED,
+            operational_availability=OperationalAvailability.AVAILABLE,
             mode=ConnectorMode.SYNC,
             inventory_model="ROOM_NIGHT",
             side_effect=SideEffect.READ,
@@ -45,6 +50,8 @@ def _capabilities() -> dict[str, CapabilityDescriptor]:
             capability_key="booking.create",
             support=SupportLevel.SUPPORTED,
             authorization_state=AuthorizationState.ACTIVE,
+            merchant_consent=MerchantConsentState.GRANTED,
+            operational_availability=OperationalAvailability.AVAILABLE,
             mode=ConnectorMode.SYNC,
             inventory_model="ROOM_NIGHT",
             side_effect=SideEffect.WRITE,
@@ -60,6 +67,8 @@ def _capabilities() -> dict[str, CapabilityDescriptor]:
             capability_key="booking.lookup",
             support=SupportLevel.SUPPORTED,
             authorization_state=AuthorizationState.ACTIVE,
+            merchant_consent=MerchantConsentState.GRANTED,
+            operational_availability=OperationalAvailability.AVAILABLE,
             mode=ConnectorMode.SYNC,
             inventory_model="ROOM_NIGHT",
             side_effect=SideEffect.READ,
@@ -69,6 +78,8 @@ def _capabilities() -> dict[str, CapabilityDescriptor]:
             capability_key="publication.update",
             support=SupportLevel.UNSUPPORTED,
             authorization_state=AuthorizationState.MISSING,
+            merchant_consent=MerchantConsentState.MISSING,
+            operational_availability=OperationalAvailability.UNAVAILABLE,
             mode=ConnectorMode.MANUAL,
             inventory_model="ROOM_NIGHT",
             side_effect=SideEffect.WRITE,
@@ -115,6 +126,8 @@ class PmsNightlyMock(Connector):
         now: str,
     ) -> OperationResult:
         self.ensure_capability("booking.create", SideEffect.WRITE)
+        if check_out <= check_in:
+            raise ValueError(f"check_out ({check_out.isoformat()}) must be after check_in ({check_in.isoformat()})")
         payload = {"room_id": room_id, "check_in": check_in.isoformat(), "check_out": check_out.isoformat()}
         req_hash = request_hash(payload)
 
@@ -139,11 +152,11 @@ class PmsNightlyMock(Connector):
                 evidence_refs=(f"pms-mock:availability-check:{business_key}",),
                 observed_at=now,
             )
-            external_reference = f"pms-res-rejected-{business_key}"
+            external_reference = f"pms-res-rejected-{tenant_id}:{business_key}"
         else:
             for night in nights:
                 self._booked[(room_id, night)] = self._booked.get((room_id, night), 0) + 1
-            external_reference = f"pms-res-{business_key}"
+            external_reference = f"pms-res-{tenant_id}:{business_key}"
             result = Succeeded(
                 external_reference=external_reference,
                 data={"room_id": room_id, "check_in": check_in.isoformat(), "check_out": check_out.isoformat()},
@@ -156,9 +169,23 @@ class PmsNightlyMock(Connector):
         )
         return result
 
+    def lookup_booking(self, tenant_id: str, business_key: str) -> OperationResult:
+        self.ensure_capability("booking.lookup", SideEffect.READ)
+        record = self._store.get(tenant_id, ACCOUNT_ID, ENVIRONMENT, "booking.create", business_key)
+        if record is None:
+            raise KeyError(business_key)
+        return record.result
+
     def submit_publication(self, *args, **kwargs) -> OperationResult:
         """Always rejected before any state is touched (backlog ENG-04
-        acceptance: PMS 未提供發布能力時在呼叫前拒絕)."""
-        self.publication_call_count += 1
-        self.ensure_capability("publication.update", SideEffect.WRITE)
+        acceptance: PMS 未提供發布能力時在呼叫前拒絕). The capability gate
+        runs first; `publication_call_count` is only incremented from the
+        `except` handler for the error ensure_capability is guaranteed to
+        raise, so a nonzero count can never be read as evidence that a
+        dispatch was attempted before the gate."""
+        try:
+            self.ensure_capability("publication.update", SideEffect.WRITE)
+        except CapabilityUnavailableError:
+            self.publication_call_count += 1
+            raise
         raise AssertionError("unreachable: ensure_capability must have raised")

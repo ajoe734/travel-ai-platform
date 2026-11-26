@@ -39,5 +39,11 @@ PMS_SOLD_OUT_CHECK_OUT = date(2026, 12, 25)
 # --- OtaDelayedPublicationMock fixtures ---------------------------------------------------
 OTA_CHANNEL_ACCEPTING = "ota-channel-a"
 OTA_SERVICE_VERSION = "3"
+# A second, distinct channel/version pair: used to prove that two tenants
+# submitting the SAME business_key on one shared mock instance never cross
+# over (backlog ENG-04 F1 remediation) and to exercise SD-C-08's
+# independent per-channel outcomes.
+OTA_CHANNEL_OTHER = "ota-channel-b"
+OTA_SERVICE_VERSION_OTHER = "9"
 
 FIXED_NOW = "2026-11-26T00:00:00Z"

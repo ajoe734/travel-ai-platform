@@ -26,8 +26,9 @@ CapabilityDescriptor／OperationResult／核對演算法轉成可執行的 Pytho
 
 ## 語言與執行環境的選擇
 
-本次啟動環境只保證 Python 3 標準函式庫可用（見 `requirements-validation.txt`），沒有安裡 Node.js 執行環境，也沒有
-資料庫或網路存取；`docs/ops` 的 VM 限制也禁止在這裡啟動正式伺服器或 Docker。SD 文件第 3 節的 `OperationResult`
+本次啟動環境保證 Python 3 標準函式庫可用（見 `requirements-validation.txt`）；主機上即使另外裝有 Node.js
+（`scripts/validate_repository.py` 本身就用它檢查 `prototypes/` 的 JavaScript 語法），也沒有資料庫或網路存取；
+`docs/ops` 的 VM 限制也禁止在這裡啟動正式伺服器或 Docker。SD 文件第 3 節的 `OperationResult`
 TypeScript 介面標註為「尚未是可引用的已安裝 SDK」的示意，本身不綁定語言。因此本輪的 typed SDK 用 Python
 `dataclasses`／`enum`／`Literal` 實作，延續 ENG-01（JSON Schema + `tests/domain_contract_test.py`）已確立的
 「真正可執行、不假裝已有未安裝的 runtime」原則。欄位名稱維持與 SD 文件一致的 snake_case，所以日後補上 HTTP 層不需要

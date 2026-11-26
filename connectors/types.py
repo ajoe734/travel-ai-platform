@@ -29,6 +29,27 @@ class AuthorizationState(str, Enum):
     REVOKED = "REVOKED"
 
 
+class MerchantConsentState(str, Enum):
+    """AGENTS.md 執行不變條件: 區分技術能力、帳號授權、商家同意、營運可用性;
+    前一項存在不能推定後一項存在. This is the merchant's own consent to let
+    the platform act on this capability, independent of whether the
+    platform's credential against the vendor is itself ACTIVE."""
+
+    GRANTED = "GRANTED"
+    MISSING = "MISSING"
+    WITHDRAWN = "WITHDRAWN"
+
+
+class OperationalAvailability(str, Enum):
+    """AGENTS.md 執行不變條件: 營運可用性, e.g. a seasonal closure or a
+    merchant-declared pause, independent of technical support/authorization
+    and independent of merchant consent."""
+
+    AVAILABLE = "AVAILABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+    DEGRADED = "DEGRADED"
+
+
 class ConnectorMode(str, Enum):
     SYNC = "SYNC"
     ASYNC = "ASYNC"
@@ -100,6 +121,8 @@ class CapabilityDescriptor:
     capability_key: str
     support: SupportLevel
     authorization_state: AuthorizationState
+    merchant_consent: MerchantConsentState
+    operational_availability: OperationalAvailability
     mode: ConnectorMode
     inventory_model: str
     side_effect: SideEffect
@@ -112,9 +135,17 @@ class CapabilityDescriptor:
     verification: CapabilityVerification | None = None
 
     def is_callable(self) -> bool:
-        """SUPPORTED is necessary but not sufficient; the account must also
-        be ACTIVE before any write is attempted (SD §2, §9)."""
-        return self.support is SupportLevel.SUPPORTED and self.authorization_state is AuthorizationState.ACTIVE
+        """SUPPORTED is necessary but not sufficient: the platform's own
+        authorization, the merchant's consent and current operational
+        availability are four independent dimensions (AGENTS.md 執行不變
+        條件); every one of them must hold before any write is attempted
+        (SD §2, §9)."""
+        return (
+            self.support is SupportLevel.SUPPORTED
+            and self.authorization_state is AuthorizationState.ACTIVE
+            and self.merchant_consent is MerchantConsentState.GRANTED
+            and self.operational_availability is OperationalAvailability.AVAILABLE
+        )
 
 
 @dataclass(frozen=True)

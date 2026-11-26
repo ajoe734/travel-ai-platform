@@ -17,6 +17,8 @@ from ..types import (
     Failed,
     IdempotencySupport,
     LookupSupport,
+    MerchantConsentState,
+    OperationalAvailability,
     OperationResult,
     SideEffect,
     SideEffectDisposition,
@@ -31,6 +33,8 @@ ENVIRONMENT = "sandbox"
 def _capabilities() -> dict[str, CapabilityDescriptor]:
     common = dict(
         authorization_state=AuthorizationState.ACTIVE,
+        merchant_consent=MerchantConsentState.GRANTED,
+        operational_availability=OperationalAvailability.AVAILABLE,
         mode=ConnectorMode.SYNC,
         inventory_model="TIMESLOT",
     )
@@ -80,6 +84,18 @@ class ExperienceReservationMock(Connector):
         self._booked: dict[str, int] = {session_id: 0 for session_id in sessions}
         self._store = IdempotencyStore()
 
+    def query_availability(self, session_id: str) -> dict[str, int]:
+        """Backs the declared `availability.read` capability (SD §9: 場次
+        資源). Returns the fixed capacity and current booked count for a
+        known session; an unknown session reads as zero capacity rather
+        than raising, mirroring how create_booking treats it."""
+        self.ensure_capability("availability.read", SideEffect.READ)
+        return {
+            "session_id": session_id,
+            "capacity": self._capacity.get(session_id, 0),
+            "booked": self._booked.get(session_id, 0),
+        }
+
     def create_booking(
         self,
         tenant_id: str,
@@ -89,6 +105,8 @@ class ExperienceReservationMock(Connector):
         now: str,
     ) -> OperationResult:
         self.ensure_capability("booking.create", SideEffect.WRITE)
+        if party_size <= 0:
+            raise ValueError(f"party_size must be a positive integer, got {party_size}")
         payload = {"session_id": session_id, "party_size": party_size}
         req_hash = request_hash(payload)
 
@@ -107,10 +125,10 @@ class ExperienceReservationMock(Connector):
                 evidence_refs=(f"experience-mock:capacity-check:{business_key}",),
                 observed_at=now,
             )
-            external_reference = f"exp-res-rejected-{business_key}"
+            external_reference = f"exp-res-rejected-{tenant_id}:{business_key}"
         else:
             self._booked[session_id] = self._booked.get(session_id, 0) + party_size
-            external_reference = f"exp-res-{business_key}"
+            external_reference = f"exp-res-{tenant_id}:{business_key}"
             result = Succeeded(
                 external_reference=external_reference,
                 data={"session_id": session_id, "party_size": party_size},

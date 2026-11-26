@@ -11,7 +11,15 @@ from __future__ import annotations
 from typing import Mapping
 
 from .errors import CapabilityUnavailableError
-from .types import AuthorizationState, CapabilityDescriptor, ConnectorMode, SideEffect, SupportLevel
+from .types import (
+    AuthorizationState,
+    CapabilityDescriptor,
+    ConnectorMode,
+    MerchantConsentState,
+    OperationalAvailability,
+    SideEffect,
+    SupportLevel,
+)
 
 
 class Connector:
@@ -26,6 +34,8 @@ class Connector:
             capability_key=capability_key,
             support=SupportLevel.UNSUPPORTED,
             authorization_state=AuthorizationState.MISSING,
+            merchant_consent=MerchantConsentState.MISSING,
+            operational_availability=OperationalAvailability.UNAVAILABLE,
             mode=ConnectorMode.SYNC,
             inventory_model="UNKNOWN",
             side_effect=SideEffect.WRITE,
