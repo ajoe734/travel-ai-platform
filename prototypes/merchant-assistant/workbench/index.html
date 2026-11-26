@@ -90,8 +90,10 @@ function validateProposal(fields) {
 async function refresh() {
   const res = await fetch(`/v1/workbench/home?tenant_id=${TENANT_ID}`);
   if (!res.ok) { setError('無法讀取工作狀態（' + res.status + '）'); return; }
+  // Does not touch the error banner: a refresh after a failed action must
+  // not silently wipe the error message the merchant just saw (handle()
+  // below clears it when a new action actually starts).
   homeItems = await res.json();
-  setError('');
   render();
 }
 
@@ -101,24 +103,36 @@ function channelLine(channel, display) {
   return `<div class="statusline"><span>${esc(channel)}</span><span class="badge ${cls}">${esc(label)}</span></div>`;
 }
 
-function renderWorkStatus(ws) {
+function renderWorkStatus(item) {
+  const ws = item.work_status;
+  const title = `<h3>${esc(item.objective)}</h3>`;
   if (ws.status === 'COMPLETED') {
-    return `<div class="card"><span class="badge">已完成</span>${Object.entries(ws.channels).map(([c, s]) => channelLine(c, s)).join('')}</div>`;
+    const completedAt = (ws.completion_record || {}).completed_at || '';
+    return `<div class="card">${title}<span class="badge">已完成</span><p class="empty">完成證據：於 ${esc(completedAt)} 由各渠道讀回核准版本確認</p>${Object.entries(ws.channels).map(([c, s]) => channelLine(c, s)).join('')}</div>`;
   }
   if (ws.status === 'PARTIAL') {
+    // Each item/reason is escaped once already; do not escape the joined
+    // string again (that double-encodes entities, e.g. turning &#39; into
+    // &amp;#39;).
     const incomplete = ws.partial_summary.incomplete_items.map((i) => `${esc(i.item)}：${esc(i.reason)}`).join('；');
-    return `<div class="card"><span class="badge wait">部分完成</span><p class="empty">已完成：${esc(ws.partial_summary.completed_items.join('、'))}；未完成：${esc(incomplete)}</p>${Object.entries(ws.channels).map(([c, s]) => channelLine(c, s)).join('')}</div>`;
+    return `<div class="card">${title}<span class="badge wait">部分完成</span><p class="empty">已完成：${esc(ws.partial_summary.completed_items.join('、'))}；未完成：${incomplete}</p>${Object.entries(ws.channels).map(([c, s]) => channelLine(c, s)).join('')}</div>`;
   }
   if (ws.status === 'FAILED') {
-    return `<div class="card"><span class="badge wait">失敗</span><p class="empty">${esc(ws.failure.reason)}</p></div>`;
+    return `<div class="card">${title}<span class="badge wait">失敗</span><p class="empty">${esc(ws.failure.reason)}</p></div>`;
   }
   if (ws.status === 'CANCELLED') {
-    return `<div class="card"><span class="badge gray">已取消</span><p class="empty">${esc(ws.cancellation.reason)}</p></div>`;
+    return `<div class="card">${title}<span class="badge gray">已取消</span><p class="empty">${esc(ws.cancellation.reason)}</p></div>`;
   }
   // RUNNING / WAITING_EXTERNAL: never show a channel as live until the
   // server's own task status says DONE (backlog ENG-06 acceptance: 後端仍
-  // pending 時首頁不顯示已成功).
-  return `<div class="card"><span class="badge wait">核對中，不需要你操作</span>${Object.entries(ws.channels).map(([c, s]) => channelLine(c, s)).join('')}</div>`;
+  // pending 時首頁不顯示已成功). Within WAITING_EXTERNAL, a RESULT_UNKNOWN
+  // (lost/ambiguous upstream response) is shown differently from an
+  // ordinary KNOWN_PENDING review -- the server already distinguishes the
+  // two in waiting_external.waiting_reason; collapsing them here would
+  // hide that a result is genuinely unconfirmed, not just slow.
+  const resultUnknown = ws.waiting_external && ws.waiting_external.waiting_reason === 'RESULT_UNKNOWN';
+  const waitLabel = resultUnknown ? '結果尚未確認，系統會自動重新查核' : '核對中，不需要你操作';
+  return `<div class="card">${title}<span class="badge wait">${waitLabel}</span>${Object.entries(ws.channels).map(([c, s]) => channelLine(c, s)).join('')}</div>`;
 }
 
 function renderDecisionCard(item) {
@@ -137,14 +151,27 @@ function renderDecisionCard(item) {
 }
 
 function renderMissingInput(item) {
-  const needsAsset = item.missing_fields.includes('asset_ref');
+  const missing = item.missing_fields || [];
+  // missing_fields can independently say "still need an asset" or "asset is
+  // in, still need the rights confirmation" -- rendering the request-decision
+  // button for the latter sent the merchant straight into a 422
+  // MISSING_REQUIRED_INPUT dead end, since the server still considers the
+  // draft incomplete.
+  let body;
+  if (missing.includes('asset_ref')) {
+    body = `<div class="row" style="margin-top:10px">
+      <button class="secondary" data-act="provide-asset" data-work="${esc(item.work_id)}">使用示範素材</button>
+      <button class="secondary" data-act="waive-asset" data-work="${esc(item.work_id)}">先不提供英文版</button>
+    </div>`;
+  } else if (missing.includes('rights_confirmed')) {
+    body = `<div class="row" style="margin-top:10px"><button class="secondary" data-act="confirm-rights" data-work="${esc(item.work_id)}">確認已取得素材授權</button></div>`;
+  } else {
+    body = `<div class="row" style="margin-top:10px"><button class="primary" data-act="request-decision" data-work="${esc(item.work_id)}">查看確認卡</button></div>`;
+  }
   return `<div class="card">
     <span class="badge wait">需要你補一份說明</span>
     <h3>${esc(item.objective)}</h3>
-    ${needsAsset ? `<div class="row" style="margin-top:10px">
-      <button class="secondary" data-act="provide-asset" data-work="${esc(item.work_id)}">使用示範素材</button>
-      <button class="secondary" data-act="waive-asset" data-work="${esc(item.work_id)}">先不提供英文版</button>
-    </div>` : `<div class="row" style="margin-top:10px"><button class="primary" data-act="request-decision" data-work="${esc(item.work_id)}">查看確認卡</button></div>`}
+    ${body}
   </div>`;
 }
 
@@ -156,7 +183,7 @@ function render() {
   $('homeList').innerHTML = homeItems.map((item) => {
     if (item.status === 'WAITING_INPUT') return renderMissingInput(item);
     if (item.status === 'WAITING_DECISION') return renderDecisionCard(item);
-    return renderWorkStatus(item.work_status);
+    return renderWorkStatus(item);
   }).join('');
 }
 
@@ -173,6 +200,11 @@ async function post(path, body) {
 }
 
 async function handle(act, el) {
+  // Clear any error left over from a previous attempt as soon as the
+  // merchant tries something new -- refresh() deliberately does not touch
+  // this, so a stale error is not wiped out from under the merchant by the
+  // very refresh() call that follows a failed action below.
+  setError('');
   try {
     if (act === 'propose') {
       const fields = {
@@ -199,14 +231,17 @@ async function handle(act, el) {
       await refresh();
       return;
     }
-    if (act === 'provide-asset' || act === 'waive-asset') {
-      const body = act === 'provide-asset' ? { asset_ref: 'asset-demo-card', rights_confirmed: true } : { asset_waived: true };
+    if (act === 'provide-asset' || act === 'waive-asset' || act === 'confirm-rights') {
+      const body = act === 'provide-asset' ? { asset_ref: 'asset-demo-card', rights_confirmed: true }
+        : act === 'waive-asset' ? { asset_waived: true }
+        : { rights_confirmed: true };
       await post(`/v1/workbench/works/${el.dataset.work}/input`, { tenant_id: TENANT_ID, ...body });
       await refresh();
       return;
     }
     if (act === 'request-decision') {
-      await post(`/v1/workbench/works/${el.dataset.work}/request-decision`, { tenant_id: TENANT_ID });
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      await post(`/v1/workbench/works/${el.dataset.work}/request-decision`, { tenant_id: TENANT_ID, expires_at: expiresAt });
       await refresh();
       return;
     }

@@ -64,16 +64,20 @@ class FakeWorkbenchServer {
   submitInput(tenantId, workId, body) {
     const draft = this.drafts.get(workId);
     if (body.asset_ref) { draft.asset_ref = body.asset_ref; draft.rights_confirmed = !!body.rights_confirmed; delete draft.asset_waived; }
-    if (body.asset_waived) { draft.asset_waived = true; delete draft.asset_ref; }
+    else if (body.asset_waived) { draft.asset_waived = true; delete draft.asset_ref; delete draft.rights_confirmed; }
+    else if (body.rights_confirmed) { draft.rights_confirmed = true; }
     const work = this.works.get(workId);
-    work.missing_fields = (draft.asset_ref || draft.asset_waived) ? [] : ['asset_ref', 'rights_confirmed'];
+    if (!draft.asset_ref && !draft.asset_waived) work.missing_fields = ['asset_ref', 'rights_confirmed'];
+    else if (draft.asset_ref && !draft.rights_confirmed) work.missing_fields = ['rights_confirmed'];
+    else work.missing_fields = [];
     return work;
   }
 
-  requestDecision(tenantId, workId) {
+  requestDecision(tenantId, workId, body) {
     const draft = this.drafts.get(workId);
     const work = this.works.get(workId);
     if (work.missing_fields.length) throw httpError(422, 'MISSING_REQUIRED_INPUT', 'still missing input');
+    if (!body || !body.expires_at) throw httpError(422, 'INVALID_SERVICE_REVISION_FIELD', 'expires_at is required per specs/workbench/api-contract.md');
     const decisionId = this._id();
     const payloadHash = 'hash-' + sortedKeysJson(draft).length + '-' + draft.content.length;
     const decision = {
@@ -114,12 +118,18 @@ class FakeWorkbenchServer {
       if (child.status === 'NEW') { child.status = 'WAITING'; continue; }
       if (child.status === 'WAITING' && child._review === 'LIVE_VERIFIED') { child.status = 'DONE'; continue; }
       if (child.status === 'WAITING' && child._review === 'REJECTED') { child.status = 'FAILED'; continue; }
+      if (child.status === 'WAITING' && child._review === 'LOST') { child.status = 'UNKNOWN'; continue; }
+      if (child.status === 'UNKNOWN' && child._review === 'LIVE_VERIFIED') { child.status = 'DONE'; continue; }
+      if (child.status === 'UNKNOWN' && child._review === 'REJECTED') { child.status = 'FAILED'; continue; }
     }
     const work = this.works.get(workId);
     const statuses = entry.children.map((c) => c.status);
-    if (statuses.every((s) => s === 'DONE')) work.status = 'COMPLETED';
+    if (statuses.every((s) => s === 'DONE')) { work.status = 'COMPLETED'; work.completed_at = 'TEST-COMPLETED-AT-2026-11-27T02:00:00Z'; }
     else if (statuses.some((s) => s === 'FAILED') && statuses.some((s) => s === 'DONE')) work.status = 'PARTIAL';
-    else if (statuses.some((s) => s === 'WAITING')) work.status = 'WAITING_EXTERNAL';
+    else if (statuses.some((s) => s === 'WAITING' || s === 'UNKNOWN')) {
+      work.status = 'WAITING_EXTERNAL';
+      work.waiting_reason = statuses.some((s) => s === 'UNKNOWN') ? 'RESULT_UNKNOWN' : 'KNOWN_PENDING';
+    }
   }
 
   simulateReview(workId, channel, outcome) {
@@ -136,7 +146,9 @@ class FakeWorkbenchServer {
     return { status: work.status, channels, partial_summary: work.status === 'PARTIAL' ? {
       completed_items: entry.children.filter((c) => c.status === 'DONE').map((c) => c.channel),
       incomplete_items: entry.children.filter((c) => c.status !== 'DONE').map((c) => ({ item: c.channel, reason: 'channel rejected' })),
-    } : undefined, failure: work.status === 'FAILED' ? { reason: 'all channels failed' } : undefined, cancellation: work.cancellation_reason ? { reason: work.cancellation_reason } : undefined };
+    } : undefined, failure: work.status === 'FAILED' ? { reason: 'all channels failed' } : undefined, cancellation: work.cancellation_reason ? { reason: work.cancellation_reason } : undefined,
+      completion_record: work.status === 'COMPLETED' ? { completed_at: work.completed_at } : undefined,
+      waiting_external: work.status === 'WAITING_EXTERNAL' ? { waiting_reason: work.waiting_reason } : undefined };
   }
 
   home(tenantId) {
@@ -163,7 +175,7 @@ function fetchFactory(server) {
       if (method === 'GET' && u.pathname === '/v1/workbench/home') payload = server.home(u.searchParams.get('tenant_id'));
       else if (method === 'POST' && u.pathname === '/v1/workbench/works') payload = server.propose(body.tenant_id, body.case_id, body.actor, body.fields);
       else if (method === 'POST' && /\/v1\/workbench\/works\/[^/]+\/input$/.test(u.pathname)) payload = server.submitInput(body.tenant_id, u.pathname.split('/')[4], body);
-      else if (method === 'POST' && /\/v1\/workbench\/works\/[^/]+\/request-decision$/.test(u.pathname)) payload = server.requestDecision(body.tenant_id, u.pathname.split('/')[4]);
+      else if (method === 'POST' && /\/v1\/workbench\/works\/[^/]+\/request-decision$/.test(u.pathname)) payload = server.requestDecision(body.tenant_id, u.pathname.split('/')[4], body);
       else if (method === 'POST' && /\/v1\/workbench\/decisions\/[^/]+\/submit$/.test(u.pathname)) payload = server.submitDecision(body.tenant_id, u.pathname.split('/')[4], body);
       else throw httpError(404, 'WORK_NOT_FOUND', 'unknown route');
       return { ok: true, status: 200, json: async () => payload };
@@ -331,6 +343,135 @@ async function proposeViaForm(x, overrides = {}) {
     const hasExecuteButton = /data-act="[^"]*execute[^"]*"/.test(html);
     const onlyKnownActs = [...html.matchAll(/data-act="([^"]+)"/g)].every((m) => ['decide'].includes(m[1]));
     return { status: !hasExecuteButton && onlyKnownActs ? 'pass' : 'fail', hasExecuteButton };
+  });
+
+  await check('An asset that still needs rights confirmation offers a confirm button, not a dead-end request-decision', async () => {
+    const server = new FakeWorkbenchServer();
+    const x = environment(server);
+    await flush();
+    await proposeViaForm(x);
+    const workId = [...server.works.keys()][0];
+    // Provide the asset WITHOUT confirming rights in the same call -- this
+    // is the two-step path missing_fields should report as
+    // ['rights_confirmed'] only, not ['asset_ref', 'rights_confirmed'].
+    await x.context.fetch(`/v1/workbench/works/${workId}/input`, { method: 'POST', body: JSON.stringify({ tenant_id: TENANT_ID, asset_ref: 'asset-demo-card' }) });
+    await x.api.refresh();
+    const htmlBeforeConfirm = x.e('homeList').innerHTML;
+    const offersConfirmNotDeadEnd = htmlBeforeConfirm.includes('data-act="confirm-rights"') && !htmlBeforeConfirm.includes('data-act="request-decision"');
+
+    x.click({ act: 'confirm-rights', work: workId });
+    await flush();
+    const htmlAfterConfirm = x.e('homeList').innerHTML;
+    const reachedDecisionCard = htmlAfterConfirm.includes('data-act="decide"') || htmlAfterConfirm.includes('查看確認卡');
+    return { status: offersConfirmNotDeadEnd && reachedDecisionCard ? 'pass' : 'fail', offersConfirmNotDeadEnd, reachedDecisionCard };
+  });
+
+  await check('An error banner survives the refresh() that follows it, and clears when a new action starts', async () => {
+    const server = new FakeWorkbenchServer();
+    const x = environment(server);
+    await flush();
+    await proposeViaForm(x);
+    const workId = [...server.works.keys()][0];
+    x.click({ act: 'waive-asset', work: workId });
+    await flush();
+    x.click({ act: 'request-decision', work: workId });
+    await flush();
+    const home = server.home(TENANT_ID);
+    const card = home[0].decision_card;
+    // Submit with a wrong hash to force AUTHORIZATION_STALE; handle()'s
+    // catch sets the error and then calls refresh() -- the error must not
+    // be wiped out by that same refresh().
+    x.click({ act: 'decide', work: home[0].work_id, decision: card.decision_id, option: 'approve', revision: String(card.revision), hash: 'wrong-hash' });
+    await flush();
+    const errorSurvivesRefresh = x.e('globalError').textContent.length > 0;
+
+    x.click({ act: 'waive-asset', work: workId }); // an unrelated action on the same work; harmless no-op server-side
+    await flush();
+    const errorClearedOnNextAction = x.e('globalError').textContent.length === 0;
+    return { status: errorSurvivesRefresh && errorClearedOnNextAction ? 'pass' : 'fail', errorSurvivesRefresh, errorClearedOnNextAction };
+  });
+
+  await check('Incomplete-item reasons are escaped once, not double-encoded', async () => {
+    const server = new FakeWorkbenchServer();
+    const x = environment(server);
+    await flush();
+    await proposeViaForm(x, { channels: ['WEB', 'PARTNER'] });
+    const workId = [...server.works.keys()][0];
+    x.click({ act: 'waive-asset', work: workId });
+    await flush();
+    x.click({ act: 'request-decision', work: workId });
+    await flush();
+    const home = server.home(TENANT_ID);
+    const card = home[0].decision_card;
+    x.click({ act: 'decide', work: home[0].work_id, decision: card.decision_id, option: 'approve', revision: String(card.revision), hash: card.payload_hash });
+    await flush();
+    server.advanceExecution(workId);
+    await x.api.refresh();
+    server.simulateReview(workId, 'WEB', 'LIVE_VERIFIED');
+    server.simulateReview(workId, 'PARTNER', 'REJECTED');
+    server.advanceExecution(workId);
+    await x.api.refresh();
+    const html = x.e('homeList').innerHTML;
+    return { status: html.includes('部分完成') && !html.includes('&amp;#39;') && !html.includes('&amp;quot;') ? 'pass' : 'fail' };
+  });
+
+  await check('A completed work shows its objective and completion evidence, a WAITING_EXTERNAL result-unknown is distinguished from known-pending', async () => {
+    const server = new FakeWorkbenchServer();
+    const x = environment(server);
+    await flush();
+    await proposeViaForm(x); // the frontend always proposes both WEB and PARTNER channels
+    const workId = [...server.works.keys()][0];
+    x.click({ act: 'waive-asset', work: workId });
+    await flush();
+    x.click({ act: 'request-decision', work: workId });
+    await flush();
+    const home = server.home(TENANT_ID);
+    const card = home[0].decision_card;
+    const objective = home[0].objective;
+    x.click({ act: 'decide', work: home[0].work_id, decision: card.decision_id, option: 'approve', revision: String(card.revision), hash: card.payload_hash });
+    await flush();
+
+    server.advanceExecution(workId); // dispatch -> WAITING
+    await x.api.refresh();
+    const runningHtml = x.e('homeList').innerHTML;
+    const objectiveShownWhileRunning = runningHtml.includes(objective);
+
+    // WEB's upstream response is lost (UNKNOWN); PARTNER has not been
+    // reviewed at all yet (still WAITING) -- the mix must surface as
+    // RESULT_UNKNOWN, not be flattened into the ordinary pending message.
+    server.simulateReview(workId, 'WEB', 'LOST');
+    server.advanceExecution(workId); // -> WAITING_EXTERNAL / RESULT_UNKNOWN
+    await x.api.refresh();
+    const unknownPendingHtml = x.e('homeList').innerHTML;
+    const showsResultUnknown = unknownPendingHtml.includes('結果尚未確認');
+
+    server.simulateReview(workId, 'WEB', 'LIVE_VERIFIED');
+    server.simulateReview(workId, 'PARTNER', 'LIVE_VERIFIED');
+    server.advanceExecution(workId); // -> COMPLETED
+    await x.api.refresh();
+    const completedHtml = x.e('homeList').innerHTML;
+    const showsCompletionEvidence = completedHtml.includes('TEST-COMPLETED-AT-2026-11-27T02:00:00Z') && completedHtml.includes(objective);
+
+    return {
+      status: objectiveShownWhileRunning && showsResultUnknown && showsCompletionEvidence ? 'pass' : 'fail',
+      objectiveShownWhileRunning, showsResultUnknown, showsCompletionEvidence,
+    };
+  });
+
+  await check('request-decision sends expires_at per specs/workbench/api-contract.md', async () => {
+    const server = new FakeWorkbenchServer();
+    const x = environment(server);
+    await flush();
+    await proposeViaForm(x);
+    const workId = [...server.works.keys()][0];
+    x.click({ act: 'waive-asset', work: workId });
+    await flush();
+    x.click({ act: 'request-decision', work: workId });
+    await flush();
+    // FakeWorkbenchServer.requestDecision throws INVALID_SERVICE_REVISION_FIELD
+    // if expires_at is missing; reaching WAITING_DECISION proves it was sent.
+    const home = server.home(TENANT_ID);
+    return { status: home[0].status === 'WAITING_DECISION' ? 'pass' : 'fail', status_seen: home[0].status };
   });
 
   console.log('Workbench frontend regression: Node VM with minimal DOM + fetch mock; NOT browser E2E, NOT the real backend.');

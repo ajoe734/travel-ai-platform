@@ -14,6 +14,7 @@ import unittest
 from services.workbench import schema_validation
 from services.workbench.errors import (
     AuthorizationStaleError,
+    CrossTenantReferenceRejectedError,
     DecisionNotPendingError,
     InvalidServiceRevisionFieldError,
     WorkNotFoundError,
@@ -372,6 +373,136 @@ class StoredEntitiesMatchDomainSchemas(unittest.TestCase):
         schema_validation.validate_work(work)
         for task in service._repo.list_tasks_for_work(TENANT, work["id"]):
             schema_validation.validate_execution_task(task)
+
+
+class TenantAndApprovalTimingGuards(unittest.TestCase):
+    """R1 review findings F1(a)/F1(b) (Antigravity, candidate d3aa041010e6):
+    a Work must not be creatable against another tenant's case, and an
+    expired decision must not still be approvable."""
+
+    def test_proposing_against_another_tenants_case_id_is_rejected(self) -> None:
+        service = _new_service()
+        other_tenant_case = {"tenant_id": OTHER_TENANT, "id": "00000000-0000-4000-8000-000000000099"}
+        with self.assertRaises(CrossTenantReferenceRejectedError):
+            service.propose_service_revision(
+                TENANT, other_tenant_case, MERCHANT, now="2026-11-27T01:00:00Z", due_at="2026-11-28T01:00:00Z",
+                merchant_text=MERCHANT_TEXT, fields=_valid_fields(),
+            )
+        self.assertEqual(service._repo.list_works(TENANT), [])
+
+    def test_approving_an_expired_decision_is_rejected_not_run_into_running(self) -> None:
+        service = _new_service()
+        work = service.propose_service_revision(
+            TENANT, CASE_ID, MERCHANT, now="2026-11-27T01:00:00Z", due_at="2026-11-28T01:00:00Z",
+            merchant_text=MERCHANT_TEXT, fields=_valid_fields(),
+        )
+        service.submit_missing_input(TENANT, work["id"], now="2026-11-27T01:05:00Z", asset_ref="a1", rights_confirmed=True)
+        _, decision = service.request_decision(TENANT, work["id"], now="2026-11-27T01:06:00Z", expires_at="2026-11-27T01:30:00Z")
+
+        with self.assertRaises(DecisionNotPendingError):
+            service.submit_decision(
+                TENANT, decision["id"], now="2026-11-27T02:00:00Z", selected_option_id="approve",
+                if_match_revision=decision["revision"], if_match_payload_hash=decision["payload_hash"],
+            )
+        work = service.get_work_status(TENANT, work["id"])
+        self.assertEqual(work["status"], "WAITING_DECISION")
+
+
+class ExecutionPhaseGuards(unittest.TestCase):
+    """R1 review finding F2 (Antigravity, candidate d3aa041010e6):
+    advance_execution must reject Work phases it cannot tick (instead of an
+    uncaught StopIteration) and must never rewrite a terminal Work's
+    completion evidence/revision on a repeated tick."""
+
+    def test_ticking_a_work_still_waiting_on_input_is_rejected_not_a_crash(self) -> None:
+        service = _new_service()
+        work = service.propose_service_revision(
+            TENANT, CASE_ID, MERCHANT, now="2026-11-27T01:00:00Z", due_at="2026-11-28T01:00:00Z",
+            merchant_text=MERCHANT_TEXT, fields=_valid_fields(),
+        )
+        with self.assertRaises(WorkPhaseMismatchError):
+            service.advance_execution(TENANT, work["id"], now="2026-11-27T01:05:00Z")
+
+    def test_ticking_a_waiting_decision_work_is_rejected_not_a_crash(self) -> None:
+        service = _new_service()
+        work = service.propose_service_revision(
+            TENANT, CASE_ID, MERCHANT, now="2026-11-27T01:00:00Z", due_at="2026-11-28T01:00:00Z",
+            merchant_text=MERCHANT_TEXT, fields=_valid_fields(),
+        )
+        service.submit_missing_input(TENANT, work["id"], now="2026-11-27T01:05:00Z", asset_ref="a1", rights_confirmed=True)
+        service.request_decision(TENANT, work["id"], now="2026-11-27T01:06:00Z", expires_at="2026-11-28T01:06:00Z")
+        with self.assertRaises(WorkPhaseMismatchError):
+            service.advance_execution(TENANT, work["id"], now="2026-11-27T01:07:00Z")
+
+    def test_ticking_a_cancelled_work_is_rejected(self) -> None:
+        service = _new_service()
+        work = service.propose_service_revision(
+            TENANT, CASE_ID, MERCHANT, now="2026-11-27T01:00:00Z", due_at="2026-11-28T01:00:00Z",
+            merchant_text=MERCHANT_TEXT, fields=_valid_fields(),
+        )
+        service.submit_missing_input(TENANT, work["id"], now="2026-11-27T01:05:00Z", asset_ref="a1", rights_confirmed=True)
+        _, decision = service.request_decision(TENANT, work["id"], now="2026-11-27T01:06:00Z", expires_at="2026-11-28T01:06:00Z")
+        service.submit_decision(
+            TENANT, decision["id"], now="2026-11-27T01:10:00Z", selected_option_id="defer",
+            if_match_revision=decision["revision"], if_match_payload_hash=decision["payload_hash"],
+        )
+        with self.assertRaises(WorkPhaseMismatchError):
+            service.advance_execution(TENANT, work["id"], now="2026-11-27T01:11:00Z")
+
+    def test_ticking_a_completed_work_again_does_not_rewrite_its_completion_evidence(self) -> None:
+        service = _new_service()
+        work, _ = _propose_and_approve(service, channels=("WEB",))
+        service.advance_execution(TENANT, work["id"], now="2026-11-27T01:11:00Z")
+        service.simulate_channel_review_result(TENANT, work["id"], "WEB", "LIVE_VERIFIED")
+        work = service.advance_execution(TENANT, work["id"], now="2026-11-27T01:13:00Z")
+        self.assertEqual(work["status"], "COMPLETED")
+        first_completed_at = work["completion_record"]["completed_at"]
+        first_revision = work["revision"]
+
+        with self.assertRaises(WorkPhaseMismatchError):
+            service.advance_execution(TENANT, work["id"], now="2026-11-27T01:30:00Z")
+        unchanged = service.get_work_status(TENANT, work["id"])
+        self.assertEqual(unchanged["completion_record"]["completed_at"], first_completed_at)
+        self.assertEqual(service._repo.get_work(TENANT, work["id"])["revision"], first_revision)
+
+
+class RightsConfirmationIsPerAsset(unittest.TestCase):
+    """R1 review finding F3(a) (Antigravity, candidate d3aa041010e6): a
+    previously confirmed rights_confirmed=True must not silently carry over
+    to a different, later-supplied asset_ref, and a submit_missing_input
+    call must not accept contradictory or empty asset fields."""
+
+    def test_replacing_the_asset_resets_rights_confirmation(self) -> None:
+        service = _new_service()
+        work = service.propose_service_revision(
+            TENANT, CASE_ID, MERCHANT, now="2026-11-27T01:00:00Z", due_at="2026-11-28T01:00:00Z",
+            merchant_text=MERCHANT_TEXT, fields=_valid_fields(),
+        )
+        service.submit_missing_input(TENANT, work["id"], now="2026-11-27T01:05:00Z", asset_ref="asset-a", rights_confirmed=True)
+        self.assertEqual(service.get_home_view(TENANT)[0]["missing_fields"], [])
+
+        # A different asset is substituted without re-confirming rights --
+        # the old confirmation must not leak onto the new asset.
+        service.submit_missing_input(TENANT, work["id"], now="2026-11-27T01:06:00Z", asset_ref="asset-b")
+        self.assertEqual(service.get_home_view(TENANT)[0]["missing_fields"], ["rights_confirmed"])
+
+    def test_empty_asset_ref_is_rejected(self) -> None:
+        service = _new_service()
+        work = service.propose_service_revision(
+            TENANT, CASE_ID, MERCHANT, now="2026-11-27T01:00:00Z", due_at="2026-11-28T01:00:00Z",
+            merchant_text=MERCHANT_TEXT, fields=_valid_fields(),
+        )
+        with self.assertRaises(InvalidServiceRevisionFieldError):
+            service.submit_missing_input(TENANT, work["id"], now="2026-11-27T01:05:00Z", asset_ref="")
+
+    def test_asset_ref_and_asset_waived_together_is_rejected(self) -> None:
+        service = _new_service()
+        work = service.propose_service_revision(
+            TENANT, CASE_ID, MERCHANT, now="2026-11-27T01:00:00Z", due_at="2026-11-28T01:00:00Z",
+            merchant_text=MERCHANT_TEXT, fields=_valid_fields(),
+        )
+        with self.assertRaises(InvalidServiceRevisionFieldError):
+            service.submit_missing_input(TENANT, work["id"], now="2026-11-27T01:05:00Z", asset_ref="asset-a", asset_waived=True)
 
 
 if __name__ == "__main__":

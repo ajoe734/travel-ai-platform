@@ -37,6 +37,7 @@ ENG-01 contracts, not to the durable-executor concurrency story.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 
 from connectors.base import Connector
 from connectors.mocks.ota_delayed_publication import OtaDelayedPublicationMock
@@ -45,6 +46,7 @@ from connectors.types import Failed, OperationResult, Pending, Succeeded, Unknow
 from . import canonical_json, schema_validation
 from .errors import (
     AuthorizationStaleError,
+    CrossTenantReferenceRejectedError,
     DecisionNotPendingError,
     DecisionOptionUnknownError,
     InvalidServiceRevisionFieldError,
@@ -53,6 +55,10 @@ from .errors import (
     WorkPhaseMismatchError,
 )
 from .repository import WorkbenchRepository
+
+
+def _parse_timestamp(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 SYSTEM_ACTOR = {"actor_kind": "SYSTEM", "actor_id": "00000000-0000-4000-8000-000000000000"}
 
@@ -92,6 +98,10 @@ class WorkbenchService:
 
     # -- Propose a new service revision (UX 2.1 discuss()) -----------------
     def propose_service_revision(self, tenant_id: str, case_id: dict, actor: dict, now: str, due_at: str, merchant_text: str, fields: dict) -> dict:
+        if case_id.get("tenant_id") != tenant_id:
+            raise CrossTenantReferenceRejectedError(
+                "case_id belongs to a different tenant than the caller (SD-W-03 cross-tenant reference rejection)"
+            )
         if fields.get("content") != merchant_text:
             raise InvalidServiceRevisionFieldError(
                 "fields['content'] must equal the merchant's own text verbatim; a service must never substitute a "
@@ -139,16 +149,25 @@ class WorkbenchService:
         work = self._require_work(tenant_id, work_id)
         if work["status"] != "WAITING_INPUT":
             raise WorkPhaseMismatchError(f"Work is {work['status']}, not WAITING_INPUT")
+        if asset_ref is not None and asset_waived:
+            raise InvalidServiceRevisionFieldError("asset_ref and asset_waived must not both be provided in the same call")
+        if asset_ref == "":
+            raise InvalidServiceRevisionFieldError("asset_ref must not be an empty string; omit it or use asset_waived instead")
         draft = self._repo.get_draft(tenant_id, work_id)
         if draft is None:
             raise WorkNotFoundError(f"no pending proposal draft for work {work_id}")
         if asset_ref is not None:
             draft["asset_ref"] = asset_ref
             draft.pop("asset_waived", None)
-        if asset_waived:
+            # A newly supplied asset carries no rights confirmation of its
+            # own; a stale rights_confirmed=True left over from a previous,
+            # different asset_ref must not leak onto this one.
+            draft["rights_confirmed"] = bool(rights_confirmed)
+        elif asset_waived:
             draft["asset_waived"] = True
             draft.pop("asset_ref", None)
-        if rights_confirmed:
+            draft.pop("rights_confirmed", None)
+        elif rights_confirmed:
             draft["rights_confirmed"] = True
         draft.setdefault("rights_confirmed", False)
         self._repo.put_draft(tenant_id, work_id, draft)
@@ -227,6 +246,8 @@ class WorkbenchService:
             raise WorkNotFoundError(f"no decision {decision_id}")
         if decision["status"] != "PENDING":
             raise DecisionNotPendingError(f"decision is {decision['status']}")
+        if _parse_timestamp(now) >= _parse_timestamp(decision["expires_at"]):
+            raise DecisionNotPendingError(f"decision expired at {decision['expires_at']}")
         if decision["revision"] != if_match_revision or decision["payload_hash"] != if_match_payload_hash:
             raise AuthorizationStaleError(
                 "decision content changed since it was shown to the merchant; re-fetch the current card before deciding again"
@@ -323,6 +344,12 @@ class WorkbenchService:
     # -- Worker tick: never called on behalf of a single merchant click -----
     def advance_execution(self, tenant_id: str, work_id: str, now: str) -> dict:
         work = self._require_work(tenant_id, work_id)
+        if work["status"] not in ("RUNNING", "WAITING_EXTERNAL"):
+            # Covers both ends of work-execution-contract.md §3: a tick on
+            # WAITING_INPUT/WAITING_DECISION/CANCELLED has no GROUP task to
+            # advance, and a tick on an already-terminal COMPLETED/FAILED
+            # /PARTIAL Work must not rewrite its completion evidence.
+            raise WorkPhaseMismatchError(f"Work is {work['status']}, not RUNNING/WAITING_EXTERNAL")
         tasks = self._repo.list_tasks_for_work(tenant_id, work_id)
         group_task = next(t for t in tasks if t["kind"] == "GROUP")
         children = [t for t in tasks if t["kind"] == "ACTION"]
