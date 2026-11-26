@@ -28,6 +28,7 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 import psycopg  # noqa: E402
+from psycopg import sql  # noqa: E402
 
 from db.repository import db as repo_db  # noqa: E402
 from db.repository import case_repository  # noqa: E402
@@ -61,17 +62,25 @@ def _migrated_schema(admin_database_url: str):
         check=True,
     )
     with psycopg.connect(admin_database_url, autocommit=True) as conn:
+        # The password can't be a bind parameter here: it sits inside the DO
+        # $$ ... $$ body, which Postgres parses as a string literal before
+        # PL/pgSQL runs, so a server-side $1 placeholder there is never seen
+        # as an actual parameter use and Postgres can't infer its type
+        # ("could not determine data type of parameter $1"). sql.Literal
+        # composes the escaped literal client-side instead, so no bind
+        # parameter is sent at all.
         conn.execute(
-            """
-            DO $$
-            BEGIN
-                IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'eng02_test_app_user') THEN
-                    CREATE ROLE eng02_test_app_user LOGIN PASSWORD %(password)s;
-                END IF;
-            END
-            $$;
-            """,
-            {"password": _APP_USER_PASSWORD},
+            sql.SQL(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'eng02_test_app_user') THEN
+                        CREATE ROLE eng02_test_app_user LOGIN PASSWORD {password};
+                    END IF;
+                END
+                $$;
+                """
+            ).format(password=sql.Literal(_APP_USER_PASSWORD))
         )
         conn.execute("GRANT app_role TO eng02_test_app_user")
     yield
