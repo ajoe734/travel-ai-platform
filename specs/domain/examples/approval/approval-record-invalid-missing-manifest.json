@@ -1,0 +1,11 @@
+{
+  "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "id": "00000000-0000-4000-8000-000000000502",
+  "decision_id": { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000401" },
+  "reviewed_revision": 1,
+  "approved_by": { "actor_kind": "CUSTOMER", "actor_id": "00000000-0000-4000-8000-0000000000c1" },
+  "verified_actor_ref": "voice-confirmation:session-998",
+  "canonicalization_version": "travel-canonical-json-v1",
+  "payload_hash": "d6e5b4c7a8e9d0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5",
+  "approved_at": "2026-11-26T05:10:00Z"
+}

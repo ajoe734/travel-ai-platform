@@ -1,0 +1,29 @@
+{
+  "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "id": "00000000-0000-4000-8000-000000000101",
+  "case_id": { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000001" },
+  "work_type": "BOOKING",
+  "objective": "為客戶完成活動場次預訂與付款",
+  "completion_contract_version": "booking-completion-v1",
+  "completion_conditions": [
+    { "condition_id": "supplier_confirmed", "description": "供應商回正式 confirmed 狀態", "satisfied": true, "evidence_ref": "evidence-1" },
+    { "condition_id": "payment_captured", "description": "付款條件符合商品政策", "satisfied": true, "evidence_ref": "evidence-2" }
+  ],
+  "principal": { "actor_kind": "CUSTOMER", "actor_id": "00000000-0000-4000-8000-0000000000c1" },
+  "status": "COMPLETED",
+  "revision": 5,
+  "execution_task_refs": [
+    { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000201" },
+    { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000202" }
+  ],
+  "completion_record": {
+    "evidence_refs": [
+      { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000f01" }
+    ],
+    "verifier_version": "booking-verifier-v1",
+    "completed_at": "2026-11-21T09:00:00Z",
+    "completion_contract_version": "booking-completion-v1"
+  },
+  "created_at": "2026-11-20T02:05:00Z",
+  "updated_at": "2026-11-21T09:00:00Z"
+}

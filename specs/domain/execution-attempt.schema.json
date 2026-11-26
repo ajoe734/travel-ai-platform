@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/domain/v1/execution-attempt.schema.json",
+  "title": "ExecutionAttempt",
+  "description": "ENG-01 new contract. Source: SD work-execution-contract.md §2,§4,§6. One immutable record of a single dispatch/reconcile/verify I/O attempt against an ExecutionTask's fixed operation and business_key. A retry of the SAME ExecutionTask always creates a NEW ExecutionAttempt with an incremented attempt_no; it never allocates a new ExecutionTask (backlog ENG-01 acceptance: 重試只增加 Attempt). Uniqueness of (tenant_id, task_id, attempt_no) across attempts is checked by tests/domain_contract_test.py against the example fixture set and is an ENG-02 persistence-layer invariant (UNIQUE constraint) going forward.",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "sa_trace": ["03", "08.2"],
+    "sd_trace": ["work-execution-contract.md §2,§4,§6"],
+    "replaces_recovered_attachment": false
+  },
+  "$defs": {
+    "ExecutionAttemptObservation": {
+      "type": "object",
+      "description": "SD §2: timeout and late-arriving results each append a new observation; the original attempt record is never overwritten.",
+      "additionalProperties": false,
+      "required": ["sequence", "observed_at", "transport_result", "outcome"],
+      "properties": {
+        "sequence": { "type": "integer", "minimum": 1 },
+        "observed_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+        "transport_result": {
+          "type": "string",
+          "enum": ["RESPONSE_RECEIVED", "TIMEOUT", "CONNECTION_RESET", "PARSE_ERROR"]
+        },
+        "external_ref": { "type": "string" },
+        "evidence_ref": { "type": "string" },
+        "outcome": {
+          "type": "string",
+          "enum": ["SUCCEEDED", "PENDING", "UNKNOWN", "FAILED"],
+          "description": "SD connector-result-and-reconciliation.md §3 OperationResult.status; capability support/unsupported is never recorded here (ADR 0002)."
+        }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenant_id", "id", "task_id", "attempt_no", "attempt_kind",
+    "fence_token", "request_hash", "started_at"
+  ],
+  "properties": {
+    "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+    "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+    "task_id": {
+      "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef",
+      "description": "The one ExecutionTask this attempt belongs to. Never changes across the attempt's lifetime."
+    },
+    "attempt_no": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Monotonically increasing per task_id. (tenant_id, task_id, attempt_no) is unique; a retry increments this rather than creating a new task_id."
+    },
+    "attempt_kind": {
+      "type": "string",
+      "enum": ["DISPATCH", "RECONCILE", "VERIFY"],
+      "description": "SD §4: RECONCILE and VERIFY may only call capabilities already declared read-only; a provider 'lookup' that actually writes must be modeled as a DISPATCH under its own authorization, never hidden inside a reconcile call (SD-C-10)."
+    },
+    "fence_token": {
+      "$ref": "common/identifiers.schema.json#/$defs/FenceToken",
+      "description": "The lease fence held at the moment this attempt was made (SD §6.3); must not be reused once a later lease has superseded it."
+    },
+    "request_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Must equal the owning ExecutionTask.request_hash for attempt_kind=DISPATCH; a changed hash means a new business request, not a retry of this attempt."
+    },
+    "request_ref": { "type": "string" },
+    "started_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+    "observations": {
+      "type": "array",
+      "description": "Append-only sequence; once written, an attempt's prior observations are immutable (SD §2).",
+      "items": { "$ref": "#/$defs/ExecutionAttemptObservation" }
+    }
+  }
+}

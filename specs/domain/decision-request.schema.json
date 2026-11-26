@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/domain/v1/decision-request.schema.json",
+  "title": "DecisionRequest",
+  "description": "ENG-01 new contract. Source: SD authorization-and-approval.md §1,§2,§4. A specific pending decision offered to a merchant or customer, versioned by revision; a newer revision never lets an old ApprovalRecord apply to it (UNIQUE(tenant_id, decision_id, reviewed_revision) is enforced at the persistence layer in ENG-02; here the revision/hash fields that make that constraint meaningful are fixed).",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "sa_trace": ["BR-05", "BR-09"],
+    "sd_trace": ["authorization-and-approval.md §1,§2,§4"],
+    "replaces_recovered_attachment": false
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenant_id", "id", "work_id", "decision_type", "revision", "status",
+    "options", "payload_hash", "canonicalization_version", "target_revision",
+    "expires_at", "requested_role", "created_at"
+  ],
+  "properties": {
+    "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+    "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+    "work_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+    "decision_type": { "type": "string", "pattern": "^[A-Z][A-Z_]*$" },
+    "revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "SD §4: a content change always produces a new revision and a new payload_hash; an old revision can never be approved into effect for new content."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["PENDING", "APPROVED", "REJECTED", "EXPIRED", "SUPERSEDED"],
+      "description": "SD §4 state machine."
+    },
+    "context_refs": {
+      "type": "array",
+      "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
+    },
+    "options": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["option_id", "description"],
+        "properties": {
+          "option_id": { "type": "string", "minLength": 1 },
+          "description": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "selected_option_id": {
+      "type": "string",
+      "description": "Only present once status is APPROVED or REJECTED."
+    },
+    "impact_summary": { "type": "string" },
+    "payload_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 of the canonical display payload for this exact revision (SD §3.2)."
+    },
+    "canonicalization_version": {
+      "type": "string",
+      "const": "travel-canonical-json-v1",
+      "description": "SD §3.2: fixes this round's canonicalization algorithm version; a future algorithm change is a new const value, not a silent reinterpretation."
+    },
+    "target_revision": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Expected revision of the target business object (order/service/policy) this decision is about."
+    },
+    "expires_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+    "requested_role": { "type": "string", "minLength": 1 },
+    "created_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "enum": ["APPROVED", "REJECTED"] } }, "required": ["status"] },
+      "then": { "required": ["selected_option_id"] }
+    }
+  ]
+}

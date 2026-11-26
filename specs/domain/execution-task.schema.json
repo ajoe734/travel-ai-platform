@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/domain/v1/execution-task.schema.json",
+  "title": "ExecutionTask",
+  "description": "ENG-01 new contract for the existing SA object (SA 03/08.2 ExecutionTask; SA SM-01). A Work commonly owns multiple ExecutionTasks; each ExecutionTask keeps one stable operation/business_key for its whole lifetime (ADR 0001: 對外 execution_id 指向它；原 SA /tasks/{id} 保持此語意). A retry never allocates a new ExecutionTask -- it only appends an ExecutionAttempt (see execution-attempt.schema.json).",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "sa_trace": ["03", "03.1", "08.2", "SM-01", "BR-06", "BR-07", "BR-08"],
+    "sd_trace": ["work-execution-contract.md §2,§4,§6"],
+    "replaces_recovered_attachment": false
+  },
+  "$defs": {
+    "TaskLease": {
+      "type": "object",
+      "description": "SD §2/§6.3: fence_token monotonically increases per lease; an expired holder must not create a new external action.",
+      "additionalProperties": false,
+      "required": ["holder", "fence_token", "leased_until"],
+      "properties": {
+        "holder": { "type": "string", "minLength": 1 },
+        "fence_token": { "$ref": "common/identifiers.schema.json#/$defs/FenceToken" },
+        "leased_until": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenant_id", "id", "work_id", "kind", "operation", "business_key",
+    "request_hash", "status", "revision", "owner_revision",
+    "postcondition_version", "postcondition", "created_at", "updated_at"
+  ],
+  "properties": {
+    "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+    "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+    "work_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" },
+    "kind": {
+      "type": "string",
+      "enum": ["ACTION", "GROUP"],
+      "description": "SD §2: root task may be GROUP, coordinating only already-approved manifest children; every real external side effect belongs to an ACTION task. GROUP never calls external write APIs directly."
+    },
+    "parent_task_id": {
+      "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef",
+      "description": "Must be the same tenant_id and Work as this task (SD §2); enforcing the no-cycle, same-Work invariant across a task graph is ENG-02 persistence/test scope."
+    },
+    "operation": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*$",
+      "description": "Capability key family, e.g. booking.create, refund.create (consistent with connector-result-and-reconciliation.md §2 capability_key naming)."
+    },
+    "business_key": { "$ref": "common/identifiers.schema.json#/$defs/BusinessOperationKey" },
+    "request_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Hash of request_snapshot; same business_key with a different request_hash is rejected at the persistence layer (409, SD §6.1)."
+    },
+    "request_snapshot": {
+      "description": "The actual business content that passed schema validation. Credentials, cookies and raw card data must never appear here (SD §2).",
+      "type": "object"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["NEW", "VALIDATING", "READY", "EXECUTING", "WAITING", "VERIFYING", "UNKNOWN", "DONE", "FAILED", "CANCELLED", "PARTIAL"],
+      "description": "SD §4. PARTIAL is only valid for a GROUP task aggregating child ACTION results."
+    },
+    "revision": { "$ref": "common/identifiers.schema.json#/$defs/Revision" },
+    "owner_revision": { "$ref": "common/identifiers.schema.json#/$defs/OwnerRevision" },
+    "postcondition_version": { "type": "string", "minLength": 1 },
+    "postcondition": {
+      "description": "Named, versioned success condition the verifier checks before DONE (SD §4/§7). Never a free-text phrase a model could rewrite to appear satisfied.",
+      "type": "object"
+    },
+    "authorization_use_id": {
+      "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef",
+      "description": "Present once this task has consumed an AuthorizationUse (SD authorization-and-approval.md §5); absent while still DRAFT/NEW for operations that need one."
+    },
+    "deadline": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+    "next_run_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+    "lease": { "$ref": "#/$defs/TaskLease" },
+    "created_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+    "updated_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "PARTIAL" } }, "required": ["status"] },
+      "then": { "properties": { "kind": { "const": "GROUP" } }, "required": ["kind"] },
+      "else": true
+    }
+  ]
+}

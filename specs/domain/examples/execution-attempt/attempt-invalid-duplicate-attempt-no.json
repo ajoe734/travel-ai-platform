@@ -1,0 +1,11 @@
+{
+  "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+  "id": "00000000-0000-4000-8000-000000000303",
+  "task_id": { "tenant_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "id": "00000000-0000-4000-8000-000000000201" },
+  "attempt_no": 2,
+  "attempt_kind": "DISPATCH",
+  "fence_token": 3,
+  "request_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "started_at": "2026-11-20T02:13:00Z",
+  "observations": []
+}

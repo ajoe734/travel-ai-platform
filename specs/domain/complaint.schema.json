@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.travel-ai-platform.invalid/domain/v1/complaint.schema.json",
+  "title": "Complaint",
+  "description": "ENG-01 new contract for the existing SA object. Source: SA 05/SM-04 (案件與補救雙軌) 與 05.1 BR-16/17. A Complaint is never the same object as a remedy action or a refund; closing a Complaint is always an explicit, separately-authored command (resolveComplaint), never an automatic side effect of any RemedyAction/Refund reaching a terminal state (backlog ENG-01 acceptance: 退款完成不會使 Complaint 自動結案).",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "sa_trace": ["FR-13", "FR-14", "FR-15", "UC-05", "UC-06", "SM-04", "BR-16", "BR-17"],
+    "replaces_recovered_attachment": false
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "tenant_id", "id", "revision", "case_id", "status", "verification_state",
+    "customer_statements", "requested_outcome", "created_at", "updated_at"
+  ],
+  "properties": {
+    "tenant_id": { "$ref": "common/identifiers.schema.json#/$defs/TenantId" },
+    "id": { "$ref": "common/identifiers.schema.json#/$defs/Id" },
+    "revision": { "$ref": "common/identifiers.schema.json#/$defs/Revision" },
+    "case_id": {
+      "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef",
+      "description": "Exactly one owning Case (ADR 0001: Complaint 關聯 Case／Order)."
+    },
+    "order_id": {
+      "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef",
+      "description": "Optional link to the Order the complaint is about; not every complaint is order-scoped (e.g. pre-sale service complaints)."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "OPEN", "CHECKING", "WAITING_CUSTOMER", "WAITING_MERCHANT", "WAITING_CHANNEL",
+        "RESOLVING", "RESOLVED", "CLOSED", "ESCALATED", "REOPENED"
+      ],
+      "description": "SA SM-04 state set, unchanged by this SD round. ESCALATED/REOPENED are sub-states layered onto the main sequence, matching SA's own notation rather than inventing a parallel flag."
+    },
+    "verification_state": {
+      "type": "string",
+      "enum": ["UNVERIFIED", "VERIFIED"],
+      "description": "A Complaint may be opened before verification (SA 05 受理); reading private order data or executing a remedy requires VERIFIED first."
+    },
+    "customer_statements": {
+      "type": "array",
+      "description": "What the customer said, kept distinct from confirmed_facts (SA 05: 陳述不自動等於事實).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["text", "stated_at", "source"],
+        "properties": {
+          "text": { "type": "string", "minLength": 1 },
+          "stated_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+          "source": { "type": "string", "enum": ["VOICE", "TEXT", "EMAIL", "CHANNEL", "OTHER"] }
+        }
+      }
+    },
+    "confirmed_facts": {
+      "type": "array",
+      "description": "case_evidence references used to establish facts (sales_order.contract_snapshot, payment, on-site record) per SA 05 證據.",
+      "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
+    },
+    "requested_outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["category", "description"],
+      "properties": {
+        "category": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 }
+      }
+    },
+    "remedy_action_refs": {
+      "type": "array",
+      "description": "RemedyAction objects selected for this complaint (full RemedyAction/Refund/CreditGrant schema is ENG-07 scope; here only the reference shape is fixed). A RemedyAction reaching SUCCEEDED/FAILED/UNKNOWN never implies a status change on this Complaint by itself.",
+      "items": { "$ref": "common/identifiers.schema.json#/$defs/TenantScopedRef" }
+    },
+    "resolution": {
+      "type": "object",
+      "description": "Present only once resolveComplaint has actually run. Its presence is the only thing that can move status to RESOLVED/CLOSED.",
+      "additionalProperties": false,
+      "required": ["resolved_at", "resolution_reason", "unresolved_items"],
+      "properties": {
+        "resolved_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+        "resolution_reason": { "type": "string", "minLength": 1 },
+        "unresolved_items": {
+          "type": "array",
+          "description": "SA 05 結案: 未解事項有理由；customer 無回覆不可寫滿意，退款 pending 不關成已解決. Empty array is a valid explicit statement that nothing is outstanding.",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "customer_responded": {
+          "type": "boolean",
+          "description": "Must not be inferred as true from silence (SA 05)."
+        }
+      }
+    },
+    "created_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" },
+    "updated_at": { "$ref": "common/identifiers.schema.json#/$defs/Timestamp" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "enum": ["RESOLVED", "CLOSED"] } },
+        "required": ["status"]
+      },
+      "then": { "required": ["resolution"] },
+      "else": { "not": { "required": ["resolution"] } }
+    }
+  ]
+}

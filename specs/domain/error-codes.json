@@ -1,0 +1,95 @@
+{
+  "schema_version": "1.0",
+  "x_origin": {
+    "status": "new_sd_contract",
+    "version": "v1",
+    "introduced": "ENG-01",
+    "note": "固定 SA 08.3 已列出的錯誤碼，並補 SD 文件新增的授權／核對碼。此登記表是開放集合；後續 ENG 任務新增錯誤碼時在此追加一筆，不需改 error-envelope.schema.json。"
+  },
+  "codes": [
+    {
+      "code": "VERSION_CONFLICT",
+      "http_status": 409,
+      "retryable_default": false,
+      "meaning": "expected_revision 或 ETag 與目前資源版本不符；重新讀取差異後再決定，不可自動覆寫。",
+      "source": "SA 08.3; SA BR-09"
+    },
+    {
+      "code": "IDEMPOTENCY_CONFLICT",
+      "http_status": 409,
+      "retryable_default": false,
+      "meaning": "同一 Idempotency-Key 但 request hash 不同；回原請求辨識與安全提示，不執行新內容。",
+      "source": "SA 08.3; SA BR-06; SD work-execution-contract.md §6.1"
+    },
+    {
+      "code": "AUTHORIZATION_STALE",
+      "http_status": 409,
+      "retryable_default": false,
+      "meaning": "同意／核准所綁的展示內容 hash 或版本已過期；重新展示差異並要求新確認。",
+      "source": "SA 08.3; SD authorization-and-approval.md §3.3/§8 SD-A-02"
+    },
+    {
+      "code": "AUTHORIZATION_SCOPE_MISMATCH",
+      "http_status": 409,
+      "retryable_default": false,
+      "meaning": "子操作超出已批准 manifest 範圍（例如新增渠道或改受益人）；不產生外部動作。",
+      "source": "SD authorization-and-approval.md §5/§8 SD-A-05"
+    },
+    {
+      "code": "CAPABILITY_UNAVAILABLE",
+      "http_status": 422,
+      "retryable_default": false,
+      "meaning": "此操作在該帳號／環境不支援或未授權；呼叫前拒絕並提供明確替代接法。",
+      "source": "SA 08.3; SD connector-result-and-reconciliation.md §2/§9 SD-C-06"
+    },
+    {
+      "code": "POLICY_APPROVAL_REQUIRED",
+      "http_status": 422,
+      "retryable_default": false,
+      "meaning": "超出事前核准政策，需要 DecisionRequest／ApprovalRecord 才能繼續。",
+      "source": "SA 08.3; SA BR-05"
+    },
+    {
+      "code": "INSUFFICIENT_REFUND_BALANCE",
+      "http_status": 422,
+      "retryable_default": false,
+      "meaning": "正式可退金額不足；核對已有／未知退款後不再執行本次退款。",
+      "source": "SA 08.3; SD credit-and-refund.md §5.1"
+    },
+    {
+      "code": "UPSTREAM_RESULT_UNKNOWN",
+      "http_status": 202,
+      "retryable_default": false,
+      "meaning": "非錯誤：結果尚不明確，回 task 供追蹤；不是要求前端重送下單。保留在登記表供 error-envelope 之外的 202 回應引用相同 code。",
+      "source": "SA 08.3"
+    },
+    {
+      "code": "RATE_LIMITED",
+      "http_status": 429,
+      "retryable_default": true,
+      "meaning": "超過速率限制；遵守 retry_after_seconds，不可忽略 Retry-After。",
+      "source": "SA 08.3"
+    },
+    {
+      "code": "SOURCE_UNAVAILABLE",
+      "http_status": 503,
+      "retryable_default": true,
+      "meaning": "來源暫時不可用；已有重要副作用先查結果，不盲目重送。",
+      "source": "SA 08.3"
+    },
+    {
+      "code": "CROSS_TENANT_REFERENCE_REJECTED",
+      "http_status": 404,
+      "retryable_default": false,
+      "meaning": "請求指向不同租戶的 Work／Case／parent_task／approval；拒絕且不揭露該資源是否存在。",
+      "source": "SA 08.3 存取與錯誤; SD work-execution-contract.md §9 SD-W-03"
+    },
+    {
+      "code": "AUTHORIZATION_USE_ALREADY_BOUND",
+      "http_status": 409,
+      "retryable_default": false,
+      "meaning": "同一 ExecutionAuthorization 已消耗到另一個 root ExecutionTask；原 root 重試仍可查回使用紀錄。",
+      "source": "SD authorization-and-approval.md §5/§8 SD-A-06"
+    }
+  ]
+}
