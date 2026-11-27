@@ -221,15 +221,21 @@ def reverse_credit_redemption(
     # Match every mutable Credit operation's account -> grant lock order.
     _lock_grant_in_account_order(conn, tenant_id=tenant_id, grant_id=str(grant_id))
     try:
-        conn.execute(
-            """INSERT INTO credit_ledger_entry
-                (tenant_id, id, account_id, grant_id, entry_type, amount_minor_units, currency,
-                 business_key, source_operation, reversal_of, occurred_at)
-            VALUES (%s, %s, %s, %s, 'REDEEM_REVERSAL', %s, %s, %s, %s, %s, clock_timestamp())
-            ON CONFLICT (tenant_id, reversal_of) DO NOTHING""",
-            (tenant_id, reversal_entry_id, account_id, grant_id, amount, currency, reversal_business_key,
-             json.dumps({"redemption_entry_id": str(redemption_entry_id)}), redemption_entry_id),
-        )
+        # This function is called inside tenant_transaction.  ``reversal_of``
+        # is the targeted conflict arbiter, but a concurrent request can still
+        # violate UNIQUE(tenant_id, business_key).  Contain that error in a
+        # savepoint so the outer tenant transaction remains usable for the
+        # replay/conflict lookup below.
+        with conn.transaction():
+            conn.execute(
+                """INSERT INTO credit_ledger_entry
+                    (tenant_id, id, account_id, grant_id, entry_type, amount_minor_units, currency,
+                     business_key, source_operation, reversal_of, occurred_at)
+                VALUES (%s, %s, %s, %s, 'REDEEM_REVERSAL', %s, %s, %s, %s, %s, clock_timestamp())
+                ON CONFLICT (tenant_id, reversal_of) DO NOTHING""",
+                (tenant_id, reversal_entry_id, account_id, grant_id, amount, currency, reversal_business_key,
+                 json.dumps({"redemption_entry_id": str(redemption_entry_id)}), redemption_entry_id),
+            )
     except psycopg.errors.UniqueViolation as exc:
         replay = conn.execute(
             "SELECT reversal_of FROM credit_ledger_entry WHERE tenant_id = %s AND business_key = %s",

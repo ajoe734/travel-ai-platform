@@ -167,6 +167,107 @@ def test_concurrent_credit_reservations_cannot_overspend_grant(
     assert set(results) == {"ok", "insufficient"}
 
 
+def _reverse_credit_in_thread(
+    database_url, tenant_id, redemption_entry_id, reversal_business_key, barrier, results, index,
+):
+    """Exercise the repository inside its real outer tenant transaction."""
+    connection = repo_db.connect(database_url)
+    try:
+        barrier.wait()
+        with repo_db.tenant_transaction(connection, tenant_id):
+            try:
+                credit_repository.reverse_credit_redemption(
+                    connection, tenant_id=tenant_id, redemption_entry_id=redemption_entry_id,
+                    reversal_entry_id=str(uuid.uuid4()), reversal_business_key=reversal_business_key,
+                )
+            except IdempotencyConflict:
+                # A caught conflict must not leave tenant_transaction aborted.
+                assert connection.execute("SELECT 1").fetchone() == (1,)
+                results[index] = "conflict"
+            else:
+                results[index] = "ok"
+    finally:
+        connection.close()
+
+
+def test_reverse_credit_redemption_business_key_races_preserve_outer_transaction(
+    app_database_url, conn, tenant_a, case_factory, payment_chain_factory,
+):
+    account_id = _account(conn, tenant_a)
+    first_grant = _grant(conn, tenant_a, account_id, key="reverse-race-first")
+    second_grant = _grant(conn, tenant_a, account_id, key="reverse-race-second")
+    order_id = payment_chain_factory(tenant_a, case_factory(tenant_a), 200)["order_id"]
+    redemption_ids = []
+    for grant, operation_key in ((first_grant, "reverse-race-redeem-1"),
+                                 (second_grant, "reverse-race-redeem-2")):
+        with repo_db.tenant_transaction(conn, tenant_a):
+            usage = credit_repository.reserve_credit_usage(
+                conn, tenant_id=tenant_a, reservation_id=str(uuid.uuid4()), account_id=account_id,
+                grant_id=grant["id"], order_id=order_id, operation_key=operation_key,
+                amount_minor_units=10, currency="TWD",
+            )
+            credit_repository.consume_credit_usage(
+                conn, tenant_id=tenant_a, reservation_id=usage["id"], ledger_entry_id=str(uuid.uuid4()),
+            )
+            redemption_ids.append(conn.execute(
+                "SELECT id FROM credit_ledger_entry WHERE tenant_id = %s AND business_key = %s",
+                (tenant_a, f"redeem:{operation_key}"),
+            ).fetchone()[0])
+
+    # The normal sequential path has the same stable-key contract as a racing
+    # webhook: same redemption is a replay, but another redemption is rejected.
+    with repo_db.tenant_transaction(conn, tenant_a):
+        sequential_key = "reverse-sequential-key"
+        credit_repository.reverse_credit_redemption(
+            conn, tenant_id=tenant_a, redemption_entry_id=redemption_ids[0],
+            reversal_entry_id=str(uuid.uuid4()), reversal_business_key=sequential_key,
+        )
+        credit_repository.reverse_credit_redemption(
+            conn, tenant_id=tenant_a, redemption_entry_id=redemption_ids[0],
+            reversal_entry_id=str(uuid.uuid4()), reversal_business_key=sequential_key,
+        )
+        with pytest.raises(IdempotencyConflict):
+            credit_repository.reverse_credit_redemption(
+                conn, tenant_id=tenant_a, redemption_entry_id=redemption_ids[1],
+                reversal_entry_id=str(uuid.uuid4()), reversal_business_key=sequential_key,
+            )
+        assert conn.execute("SELECT 1").fetchone() == (1,)
+
+    # Same redemption/key is idempotent even when both outer transactions race.
+    same_key = "reverse-race-idempotent"
+    same_results = [None, None]
+    same_barrier = threading.Barrier(2)
+    same_threads = [
+        threading.Thread(target=_reverse_credit_in_thread, args=(
+            app_database_url, tenant_a, redemption_ids[0], same_key, same_barrier, same_results, index,
+        ))
+        for index in range(2)
+    ]
+    for thread in same_threads:
+        thread.start()
+    for thread in same_threads:
+        thread.join(timeout=30)
+    assert same_results == ["ok", "ok"]
+
+    # One business key cannot be rebound to a distinct redemption.  The losing
+    # request must raise the domain conflict, rather than InFailedSqlTransaction.
+    conflicting_key = "reverse-race-conflict"
+    conflict_results = [None, None]
+    conflict_barrier = threading.Barrier(2)
+    conflict_threads = [
+        threading.Thread(target=_reverse_credit_in_thread, args=(
+            app_database_url, tenant_a, redemption_id, conflicting_key, conflict_barrier,
+            conflict_results, index,
+        ))
+        for index, redemption_id in enumerate(redemption_ids)
+    ]
+    for thread in conflict_threads:
+        thread.start()
+    for thread in conflict_threads:
+        thread.join(timeout=30)
+    assert set(conflict_results) == {"ok", "conflict"}
+
+
 def test_notification_failure_does_not_close_complaint(
     conn, tenant_a, case_factory, work_factory, payment_chain_factory
 ):
