@@ -43,6 +43,21 @@ def test_trace_joins_attempt_to_observation_and_hides_other_tenant(conn, tenant_
         conn.execute("UPDATE payment SET external_transaction_id='payment-1' WHERE tenant_id=%s AND id=%s", (tenant_a, chain["payment_id"]))
         conn.execute("""INSERT INTO refund (tenant_id,id,payment_id,business_key,amount_minor_units,currency,currency_scale_ref,state,provider_refund_id)
                         VALUES (%s,%s,%s,%s,1,'TWD','iso4217-minor-unit-2','SUCCEEDED','refund-1')""", (tenant_a, str(uuid.uuid4()), chain["payment_id"], f"refund:{task_a}"))
+        decision_id, approval_id, version_id, service_id = (str(uuid.uuid4()) for _ in range(4))
+        content = {"title": "trace publication"}
+        approved_payload = {"purpose": "publish", "service_id": service_id, "version": 1, "content": content}
+        approval_repository.create_decision_request(conn, tenant_id=tenant_a, decision_id=decision_id, revision=1, work_id=work_a,
+            decision_type="SERVICE_VERSION_APPROVAL", options=[{"id": "approve"}], payload_hash="0" * 64, target_revision=1,
+            expires_at="2030-01-01T00:00:00Z", requested_role="MERCHANT_ADMIN")
+        approval_repository.approve_decision(conn, tenant_id=tenant_a, decision_id=decision_id, reviewed_revision=1, selected_option_id="approve",
+            approval_id=approval_id, approved_by={"actor_kind": "HUMAN_MERCHANT", "actor_id": "merchant"}, verified_actor_ref="test",
+            approved_payload=approved_payload, payload_hash=canonical_json.payload_hash(approved_payload), scope_manifest=[], approved_at="2020-01-01T00:00:00Z")
+        publication_repository.create_service_version(conn, tenant_id=tenant_a, version_id=version_id, service_id=service_id, version=1,
+            base_version=None, content=content, change_diff={}, content_hash=canonical_json.payload_hash(content), approval_id=approval_id, approved_at="2020-01-01T00:00:00Z")
+        publication = publication_repository.create_publication(conn, tenant_id=tenant_a, publication_id=str(uuid.uuid4()), service_version_id=version_id,
+            channel="ota", connector_account_id="trace-account", environment="MOCK", business_key=f"booking:{task_a}", desired_version=1)
+        publication_repository.observe_publication(conn, tenant_id=tenant_a, publication_id=publication["id"], expected_revision=publication["revision"],
+            status="PENDING", submitted_version=1, external_reference="publication-1", reconciliation_token="trace-token")
         trace = ops_repository.assemble_trace(conn, tenant_id=tenant_a, task_id=task_a)
         foreign = ops_repository.assemble_trace(conn, tenant_id=tenant_a, task_id=task_b)
     assert trace["case_id"] == case_a
@@ -50,6 +65,7 @@ def test_trace_joins_attempt_to_observation_and_hides_other_tenant(conn, tenant_
     assert trace["attempt_observations"][0]["external_ref"] == "provider-1"
     assert trace["completion_evidence"][0]["external_ref"] == "provider-1"
     assert trace["order_payment_refund"] == [{"order_id": chain["order_id"], "supplier_booking_external_ref": "booking-1", "payment_external_transaction_id": "order-payment-1", "payment_external_transaction": "payment-1", "refund_external_ref": "refund-1"}]
+    assert trace["publications"][0]["external_reference"] == "publication-1"
     assert foreign is None
 
 
