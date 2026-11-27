@@ -105,6 +105,10 @@ def test_alerts_cover_each_class_and_use_tenant_scoped_ref_json(conn, tenant_a, 
         approval_repository.approve_decision(conn, tenant_id=tenant_a, decision_id=decision_id, reviewed_revision=1, selected_option_id="accept",
             approval_id=approval_id, approved_by={"actor_kind": "CUSTOMER", "actor_id": "merchant"}, verified_actor_ref="test",
             approved_payload={}, payload_hash=canonical_json.payload_hash({}), scope_manifest=[], approved_at="2020-01-01T00:00:00Z")
+        resolved_only = ops_repository.operational_alerts(
+            conn, tenant_id=tenant_a, now="2026-01-01T00:00:00Z", stale_before="2020-01-01T00:00:00Z"
+        )
+        assert not resolved_only["authorization_blockers"]
         conn.execute("""INSERT INTO execution_authorization
             (tenant_id,id,work_id,root_business_key,capabilities,approval_refs,manifest_hash,expiry,issued_at)
             VALUES (%s,%s,%s,'booking:ops',%s,%s,%s,'2020-01-01T00:00:00Z','2020-01-01T00:00:00Z')""",
@@ -147,7 +151,7 @@ def test_alerts_cover_each_class_and_use_tenant_scoped_ref_json(conn, tenant_a, 
         (dispatching["id"], "DISPATCHING"), (pending["id"], "PENDING")
     }
     with repo_db.tenant_transaction(conn, tenant_b):
-        isolated = ops_repository.operational_alerts(conn, tenant_id=tenant_b, now="2026-01-01T00:00:00Z", stale_before="2020-01-01T00:00:00Z")
+        isolated = ops_repository.operational_alerts(conn, tenant_id=tenant_b, now="2026-01-01T00:00:00Z", stale_before="2099-01-01T00:00:00Z")
     assert not isolated["overdue_reconciliation"] and not isolated["expired_execution_lease"]
     assert not isolated["authorization_blockers"] and not isolated["inbox_exceptions"] and not isolated["stuck_publications"]
     assert isolated["outbox_backlog"][0]["count"] == 0
