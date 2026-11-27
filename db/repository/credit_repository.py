@@ -170,31 +170,27 @@ def reverse_credit_redemption(
 ) -> None:
     """Append one reversal for a verified cancelled redemption, never re-ISSUE.
 
-    ``UNIQUE(reversal_of)`` is the database backstop against replaying a
-    cancellation webhook with another key.  The original REDEEM remains in
-    the evidence trail and is offset by a linked REDEEM_REVERSAL.
+    ``UNIQUE(tenant_id, reversal_of)`` plus the targeted ``ON CONFLICT`` is
+    the database backstop against concurrent/replayed cancellation webhooks.
+    Ledger rows are immutable and ``app_role`` deliberately has no UPDATE
+    privilege, so this reads the original without a row-lock clause.  The
+    original REDEEM remains in the evidence trail and is offset by a linked
+    REDEEM_REVERSAL.
     """
     original = conn.execute(
         """SELECT account_id, grant_id, amount_minor_units, currency, entry_type
-             FROM credit_ledger_entry
-             WHERE tenant_id = %s AND id = %s
-             FOR KEY SHARE""",
+             FROM credit_ledger_entry WHERE tenant_id = %s AND id = %s""",
         (tenant_id, redemption_entry_id),
     ).fetchone()
     if original is None or original[4] != "REDEEM":
         raise ValueError("Credit reversal must reference an existing REDEEM entry")
-    existing = conn.execute(
-        "SELECT id FROM credit_ledger_entry WHERE tenant_id = %s AND reversal_of = %s",
-        (tenant_id, redemption_entry_id),
-    ).fetchone()
-    if existing is not None:
-        return
     account_id, grant_id, amount, currency, _ = original
     conn.execute(
         """INSERT INTO credit_ledger_entry
                 (tenant_id, id, account_id, grant_id, entry_type, amount_minor_units, currency,
                  business_key, source_operation, reversal_of, occurred_at)
-            VALUES (%s, %s, %s, %s, 'REDEEM_REVERSAL', %s, %s, %s, %s, %s, %s, clock_timestamp())""",
+            VALUES (%s, %s, %s, %s, 'REDEEM_REVERSAL', %s, %s, %s, %s, %s, %s, clock_timestamp())
+            ON CONFLICT (tenant_id, reversal_of) DO NOTHING""",
         (tenant_id, reversal_entry_id, account_id, grant_id, amount, currency, reversal_business_key,
          json.dumps({"redemption_entry_id": str(redemption_entry_id)}), redemption_entry_id),
     )
