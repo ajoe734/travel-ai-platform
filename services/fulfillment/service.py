@@ -1,15 +1,14 @@
 """ENG-05 第一條接單耐久流程: Case -> Work -> quote -> consent -> mock
 reservation -> reconciliation -> completion evidence.
 
-Implements backlog.md#eng-05 on top of already-durable persistence: every
-method here takes an already-open ``psycopg.Connection`` positioned inside
-``db.repository.db.tenant_transaction(conn, tenant_id)`` (same convention as
-every other db/repository caller), so a crash between two calls leaves
-whatever the last committed transaction wrote -- there is no in-process
-state a restart could lose. ``FulfillmentService`` itself holds nothing but
-a connector reference; a fresh instance pointed at the same database and
-given the same ``task_id``/``work_id`` continues exactly where a previous
-process left off (backlog ENG-05 acceptance: "Worker 重啟後可延續").
+Implements backlog.md#eng-05 on top of already-durable persistence.  Command
+methods use the caller's tenant-scoped transaction; dispatch/reconciliation
+Activities instead use a configured fresh worker connection for each short
+transaction, so connector I/O never runs inside the caller transaction.
+``FulfillmentService`` itself holds no process-local workflow state: a fresh
+instance pointed at the same database and given the same ``task_id``/``work_id``
+continues from the durable task/attempt rows (backlog ENG-05 acceptance:
+"Worker 重啟後可延續").
 
 Scope boundary (disclosed per AI_COLLABORATION_GUIDE.md §0.7): consent here
 uses db/repository/approval_repository.py's DecisionRequest/ApprovalRecord
@@ -31,14 +30,15 @@ collapsed NEW->EXECUTING placeholder tick).
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from datetime import timedelta
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from connectors.base import Connector
 from connectors.idempotency import request_hash as _hash_snapshot
 from connectors.types import Failed, OperationResult, Succeeded
 
-from db.repository import approval_repository, execution_repository, fulfillment_repository, outbox_inbox_repository, work_repository
+from db.repository import approval_repository, db as repository_db, execution_repository, fulfillment_repository, outbox_inbox_repository, work_repository
 from db.repository.errors import VersionConflict
 from services.authorization import canonical_json
 from services.authorization.temporal import is_at_or_before, parse_timestamp
@@ -64,8 +64,28 @@ def _add_seconds(timestamp: str, seconds: float) -> str:
 
 
 class FulfillmentService:
-    def __init__(self, connector: Connector) -> None:
+    def __init__(self, connector: Connector, *, worker_connection_factory: Callable[[], Any] | None = None) -> None:
         self._connector = connector
+        self._worker_connection_factory = worker_connection_factory
+
+    @contextmanager
+    def _worker_transaction(self, tenant_id: str) -> Iterator[Any]:
+        """A worker-owned short transaction, never the caller's request TX."""
+        if self._worker_connection_factory is None:
+            raise RuntimeError("worker_connection_factory is required for dispatch/reconcile durability")
+        worker_conn = self._worker_connection_factory()
+        try:
+            with repository_db.tenant_transaction(worker_conn, tenant_id):
+                yield worker_conn
+        finally:
+            worker_conn.close()
+
+    @staticmethod
+    def _task_held_by_fence(conn, *, tenant_id: str, task_id: str, fence_token: int) -> dict[str, Any]:
+        task = execution_repository.get_execution_task(conn, tenant_id=tenant_id, task_id=task_id)
+        if task is None or task["lease_fence_token"] != fence_token or task["status"] not in ("EXECUTING", "WAITING", "UNKNOWN"):
+            raise TaskLeaseContendedError(f"execution_task {task_id} is no longer held by fence {fence_token}")
+        return task
 
     # -- 1. Accept the order: query supply, form a quote, ask for consent ----
 
@@ -302,120 +322,103 @@ class FulfillmentService:
         now: str,
         lease_seconds: float = 30,
         simulate_timeout: bool = False,
+        simulate_crash_after_external: bool = False,
         reconcile_after_seconds: float = 60,
     ) -> dict[str, Any]:
-        """The worker Activity that actually calls the connector. Only valid
-        for a task still NEW; a task already WAITING/UNKNOWN must go through
-        reconcile_booking instead (SD §4: UNKNOWN never re-dispatches)."""
-        task = execution_repository.get_execution_task(conn, tenant_id=tenant_id, task_id=task_id)
-        if task is None:
-            raise TaskNotFoundError(f"no execution_task {task_id}")
-        if task["status"] != "NEW":
-            raise WorkPhaseMismatchError(
-                f"execution_task {task_id} is {task['status']}, not NEW; dispatch_booking only sends the first "
-                "attempt, reconcile_booking handles WAITING/UNKNOWN"
+        """Commit intent, call the connector outside a transaction, then
+        commit the observation.  An external success followed by a process
+        death leaves EXECUTING + its stable business key for reconciliation.
+        """
+        # TX1: cancellation and dispatch race on this one durable predicate.
+        with self._worker_transaction(tenant_id) as worker_conn:
+            task = execution_repository.get_execution_task(worker_conn, tenant_id=tenant_id, task_id=task_id)
+            if task is None:
+                raise TaskNotFoundError(f"no execution_task {task_id}")
+            if task["status"] != "NEW":
+                raise WorkPhaseMismatchError(f"execution_task {task_id} is {task['status']}, not NEW")
+            self._assert_dispatch_approval(worker_conn, tenant_id=tenant_id, task=task, now=now)
+            task = execution_repository.claim_new_task_for_dispatch(
+                worker_conn, tenant_id=tenant_id, task_id=task_id, holder=holder, now=now,
+                lease_until=_add_seconds(now, lease_seconds),
             )
+            if task is None:
+                current = execution_repository.get_execution_task(worker_conn, tenant_id=tenant_id, task_id=task_id)
+                if current is not None and current["status"] == "CANCELLED":
+                    return {"task": current, "outcome": "CANCELLED_BEFORE_DISPATCH"}
+                raise TaskLeaseContendedError(f"execution_task {task_id} was claimed or changed by another worker")
+            fence = task["lease_fence_token"]
+            attempt_id = _new_id()
+            execution_repository.record_attempt(
+                worker_conn, tenant_id=tenant_id, attempt_id=attempt_id, task_id=task_id,
+                attempt_no=execution_repository.next_attempt_no(worker_conn, tenant_id=tenant_id, task_id=task_id),
+                attempt_kind="DISPATCH", fence_token=fence, request_hash=task["request_hash"], started_at=now,
+            )
+            snapshot = task["request_snapshot"]
 
-        self._assert_dispatch_approval(conn, tenant_id=tenant_id, task=task, now=now)
-
-        # This is the dispatch-intent transition.  It races cancellation as
-        # one SQL predicate; only its winner can create an attempt or call the
-        # connector (SD-W-11).
-        task = execution_repository.claim_new_task_for_dispatch(
-            conn, tenant_id=tenant_id, task_id=task_id, holder=holder, now=now,
-            lease_until=_add_seconds(now, lease_seconds),
-        )
-        if task is None:
-            current = execution_repository.get_execution_task(conn, tenant_id=tenant_id, task_id=task_id)
-            if current is not None and current["status"] == "CANCELLED":
-                return {"task": current, "outcome": "CANCELLED_BEFORE_DISPATCH"}
-            raise TaskLeaseContendedError(f"execution_task {task_id} was claimed or changed by another worker")
-        fence = task["lease_fence_token"]
-        attempt_id = _new_id()
-        execution_repository.record_attempt(
-            conn, tenant_id=tenant_id, attempt_id=attempt_id, task_id=task_id,
-            attempt_no=execution_repository.next_attempt_no(conn, tenant_id=tenant_id, task_id=task_id),
-            attempt_kind="DISPATCH", fence_token=fence, request_hash=task["request_hash"], started_at=now,
-        )
-
-        snapshot = task["request_snapshot"]
+        # External I/O intentionally has no open database transaction.
         if simulate_timeout:
             # The external side effect genuinely happens -- the mock's own
             # dispatch ledger really records this booking -- but this worker
             # never observes the response, so the outcome must stay UNKNOWN
             # rather than being inferred either way (SD-C-01).
             self._connector.create_booking(tenant_id, task["business_key"], snapshot["session_id"], snapshot["party_size"], now)
-            execution_repository.append_observation(
-                conn, tenant_id=tenant_id, attempt_id=attempt_id, sequence=1, observed_at=now,
-                transport_result="TIMEOUT", outcome="UNKNOWN",
-            )
-            task, work = self._mark_unknown(
-                conn, tenant_id=tenant_id, work_id=task["work_id"], task=task, now=now, fence_token=fence,
-                next_check_at=_add_seconds(now, reconcile_after_seconds),
-            )
-            execution_repository.release_lease(conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
-            return {"task": task, "work": work, "outcome": "UNKNOWN"}
+            with self._worker_transaction(tenant_id) as worker_conn:
+                task = self._task_held_by_fence(worker_conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
+                execution_repository.append_observation(worker_conn, tenant_id=tenant_id, attempt_id=attempt_id, sequence=1, observed_at=now, transport_result="TIMEOUT", outcome="UNKNOWN")
+                task, work = self._mark_unknown(worker_conn, tenant_id=tenant_id, work_id=task["work_id"], task=task, now=now, fence_token=fence, next_check_at=_add_seconds(now, reconcile_after_seconds))
+                execution_repository.release_lease(worker_conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
+                return {"task": task, "work": work, "outcome": "UNKNOWN"}
 
         result = self._connector.create_booking(tenant_id, task["business_key"], snapshot["session_id"], snapshot["party_size"], now)
-        outcome = self._apply_dispatch_result(
-            conn, tenant_id=tenant_id, work_id=task["work_id"], task=task, attempt_id=attempt_id, result=result,
-            now=now, fence_token=fence,
-        )
-        execution_repository.release_lease(conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
-        return outcome
+        if simulate_crash_after_external:
+            raise RuntimeError("simulated process crash after connector success and before TX2")
+        # TX2: persist result/evidence after the external side effect.
+        with self._worker_transaction(tenant_id) as worker_conn:
+            task = self._task_held_by_fence(worker_conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
+            outcome = self._apply_dispatch_result(worker_conn, tenant_id=tenant_id, work_id=task["work_id"], task=task, attempt_id=attempt_id, result=result, now=now, fence_token=fence)
+            execution_repository.release_lease(worker_conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
+            return outcome
 
     # -- 4. Reconcile a WAITING/UNKNOWN task via a read-only lookup -----------
 
     def reconcile_booking(
         self, conn, *, tenant_id: str, task_id: str, holder: str, now: str, lease_seconds: float = 30,
     ) -> dict[str, Any]:
-        task = execution_repository.get_execution_task(conn, tenant_id=tenant_id, task_id=task_id)
-        if task is None:
-            raise TaskNotFoundError(f"no execution_task {task_id}")
-        if task["status"] in ("DONE", "FAILED", "CANCELLED"):
-            # Idempotent no-op: a duplicate scheduler tick (or a tick racing
-            # a webhook that already resolved this task) must never regress
-            # an already-terminal task (SD-W-12).
-            return {"task": task, "outcome": "ALREADY_TERMINAL_NO_OP"}
-        if task["status"] not in ("WAITING", "UNKNOWN"):
-            raise WorkPhaseMismatchError(f"execution_task {task_id} is {task['status']}, not WAITING/UNKNOWN")
-
-        lease = execution_repository.acquire_lease(
-            conn, tenant_id=tenant_id, task_id=task_id, holder=holder, now=now,
-            lease_until=_add_seconds(now, lease_seconds),
-        )
-        if lease is None:
-            raise TaskLeaseContendedError(f"execution_task {task_id} lease is held by another worker")
-        fence = lease["lease_fence_token"]
-
-        attempt_id = _new_id()
-        execution_repository.record_attempt(
-            conn, tenant_id=tenant_id, attempt_id=attempt_id, task_id=task_id,
-            attempt_no=execution_repository.next_attempt_no(conn, tenant_id=tenant_id, task_id=task_id),
-            attempt_kind="RECONCILE", fence_token=fence, request_hash=task["request_hash"], started_at=now,
-        )
+        # TX1 records a read-only reconciliation attempt. EXECUTING is
+        # included for the crash-after-external-success recovery path.
+        with self._worker_transaction(tenant_id) as worker_conn:
+            task = execution_repository.get_execution_task(worker_conn, tenant_id=tenant_id, task_id=task_id)
+            if task is None:
+                raise TaskNotFoundError(f"no execution_task {task_id}")
+            if task["status"] in ("DONE", "FAILED", "CANCELLED"):
+                return {"task": task, "outcome": "ALREADY_TERMINAL_NO_OP"}
+            if task["status"] not in ("EXECUTING", "WAITING", "UNKNOWN"):
+                raise WorkPhaseMismatchError(f"execution_task {task_id} is {task['status']}, not EXECUTING/WAITING/UNKNOWN")
+            lease = execution_repository.acquire_lease(worker_conn, tenant_id=tenant_id, task_id=task_id, holder=holder, now=now, lease_until=_add_seconds(now, lease_seconds))
+            if lease is None:
+                raise TaskLeaseContendedError(f"execution_task {task_id} lease is held by another worker")
+            task = lease
+            fence = task["lease_fence_token"]
+            attempt_id = _new_id()
+            execution_repository.record_attempt(worker_conn, tenant_id=tenant_id, attempt_id=attempt_id, task_id=task_id, attempt_no=execution_repository.next_attempt_no(worker_conn, tenant_id=tenant_id, task_id=task_id), attempt_kind="RECONCILE", fence_token=fence, request_hash=task["request_hash"], started_at=now)
 
         try:
             result: OperationResult = self._connector.lookup_booking(tenant_id, task["business_key"])
         except KeyError:
             # SD-C-03: a first not-found read is not a failure; stay UNKNOWN
-            # and let the next scheduled tick retry (next_run_at untouched
-            # here means "due again immediately" under list_tasks_due_for_
-            # reconciliation's own ordering, which is acceptable for this
-            # vertical slice's bounded retry window).
-            execution_repository.append_observation(
-                conn, tenant_id=tenant_id, attempt_id=attempt_id, sequence=1, observed_at=now,
-                transport_result="RESPONSE_RECEIVED", outcome="UNKNOWN",
-            )
-            execution_repository.release_lease(conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
-            return {"task": task, "outcome": "STILL_UNKNOWN"}
+            # and schedule the next read-only reconciliation tick.
+            with self._worker_transaction(tenant_id) as worker_conn:
+                task = self._task_held_by_fence(worker_conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
+                execution_repository.append_observation(worker_conn, tenant_id=tenant_id, attempt_id=attempt_id, sequence=1, observed_at=now, transport_result="RESPONSE_RECEIVED", outcome="UNKNOWN")
+                task, work = self._mark_unknown(worker_conn, tenant_id=tenant_id, work_id=task["work_id"], task=task, now=now, fence_token=fence, next_check_at=_add_seconds(now, lease_seconds))
+                execution_repository.release_lease(worker_conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
+                return {"task": task, "work": work, "outcome": "STILL_UNKNOWN"}
 
-        outcome = self._apply_dispatch_result(
-            conn, tenant_id=tenant_id, work_id=task["work_id"], task=task, attempt_id=attempt_id, result=result,
-            now=now, fence_token=fence,
-        )
-        execution_repository.release_lease(conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
-        return outcome
+        with self._worker_transaction(tenant_id) as worker_conn:
+            task = self._task_held_by_fence(worker_conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
+            outcome = self._apply_dispatch_result(worker_conn, tenant_id=tenant_id, work_id=task["work_id"], task=task, attempt_id=attempt_id, result=result, now=now, fence_token=fence)
+            execution_repository.release_lease(worker_conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
+            return outcome
 
     # -- 5. Cancel: deterministic outcome against a racing dispatch ----------
 

@@ -37,8 +37,11 @@ def connector():
 
 
 @pytest.fixture()
-def fulfillment(connector):
-    return FulfillmentService(connector)
+def fulfillment(connector, app_database_url):
+    return FulfillmentService(
+        connector,
+        worker_connection_factory=lambda: repo_db.connect(app_database_url),
+    )
 
 
 def _accept_and_approve(fulfillment, conn, tenant_id, case_id, *, party_size=2, session_id=SESSION_ID, now="2026-12-01T00:00:00+00:00"):
@@ -134,7 +137,10 @@ def test_restart_continuation_reconciles_an_unknown_task_via_lookup_not_a_new_cr
     # state from the dispatch above, continues purely from what is durable.
     fresh_connection = repo_db.connect(app_database_url)
     try:
-        fresh_service = FulfillmentService(fulfillment._connector)
+        fresh_service = FulfillmentService(
+            fulfillment._connector,
+            worker_connection_factory=lambda: repo_db.connect(app_database_url),
+        )
         with repo_db.tenant_transaction(fresh_connection, tenant_a):
             reconciled = fresh_service.reconcile_booking(
                 fresh_connection, tenant_id=tenant_a, task_id=task_id, holder="worker-2",
@@ -150,6 +156,49 @@ def test_restart_continuation_reconciles_an_unknown_task_via_lookup_not_a_new_cr
     # lookup_booking (a declared READ capability) is what found it, not a
     # second create_booking call. The first dispatch's create_booking call
     # is the only WRITE this test ever makes against the connector.
+    assert len(fulfillment._connector._store._records) == 1
+
+
+def test_crash_after_external_success_recovers_executing_intent_via_lookup(
+    fulfillment, conn, app_database_url, tenant_a, case_factory,
+):
+    """F2 regression: TX1 must survive a process death after the connector
+    accepted the stable business key but before the outcome transaction ran.
+    Restart recovery is lookup-only; it must not create a second booking.
+    """
+    case_id = case_factory(tenant_a)
+    accepted, approved = _accept_and_approve(fulfillment, conn, tenant_a, case_id)
+    task_id = approved["task"]["id"]
+
+    with pytest.raises(RuntimeError, match="simulated process crash"):
+        with repo_db.tenant_transaction(conn, tenant_a):
+            fulfillment.dispatch_booking(
+                conn, tenant_id=tenant_a, task_id=task_id, holder="worker-before-crash",
+                now="2026-12-01T00:10:00+00:00", simulate_crash_after_external=True,
+            )
+
+    with repo_db.tenant_transaction(conn, tenant_a):
+        stranded = execution_repository.get_execution_task(conn, tenant_id=tenant_a, task_id=task_id)
+        dispatch_attempts = conn.execute(
+            "SELECT count(*) FROM execution_attempt WHERE tenant_id = %s AND task_id = %s AND attempt_kind = 'DISPATCH'",
+            (tenant_a, task_id),
+        ).fetchone()[0]
+    assert stranded["status"] == "EXECUTING"
+    assert dispatch_attempts == 1
+
+    restarted = FulfillmentService(
+        fulfillment._connector,
+        worker_connection_factory=lambda: repo_db.connect(app_database_url),
+    )
+    with repo_db.tenant_transaction(conn, tenant_a):
+        recovered = restarted.reconcile_booking(
+            conn, tenant_id=tenant_a, task_id=task_id, holder="worker-after-crash",
+            # The first holder's lease is deliberately allowed to expire.
+            now="2026-12-01T00:10:31+00:00",
+        )
+    assert recovered["outcome"] == "SUCCEEDED"
+    assert recovered["task"]["status"] == "DONE"
+    assert recovered["work"]["status"] == "COMPLETED"
     assert len(fulfillment._connector._store._records) == 1
 
 
@@ -212,7 +261,10 @@ def test_cancel_vs_dispatch_race_has_exactly_one_deterministic_winner(
     def _dispatch():
         connection = repo_db.connect(app_database_url)
         try:
-            service = FulfillmentService(ExperienceReservationMock({SESSION_ID: SESSION_CAPACITY}))
+            service = FulfillmentService(
+                ExperienceReservationMock({SESSION_ID: SESSION_CAPACITY}),
+                worker_connection_factory=lambda: repo_db.connect(app_database_url),
+            )
             barrier.wait()
             with repo_db.tenant_transaction(connection, tenant_a):
                 outcome = service.dispatch_booking(
@@ -226,7 +278,10 @@ def test_cancel_vs_dispatch_race_has_exactly_one_deterministic_winner(
     def _cancel():
         connection = repo_db.connect(app_database_url)
         try:
-            service = FulfillmentService(ExperienceReservationMock({SESSION_ID: SESSION_CAPACITY}))
+            service = FulfillmentService(
+                ExperienceReservationMock({SESSION_ID: SESSION_CAPACITY}),
+                worker_connection_factory=lambda: repo_db.connect(app_database_url),
+            )
             barrier.wait()
             try:
                 with repo_db.tenant_transaction(connection, tenant_a):
