@@ -46,12 +46,14 @@ def _safe_source_ref(source_ref: str) -> bool:
     if parsed.scheme not in ("http", "https"):
         return True  # durable provider/object references are not fetched here
     host = (parsed.hostname or "").lower()
+    if not host:
+        return False
     if host in {"localhost", "metadata.google.internal"} or host.endswith(".localhost"):
         return False
     import ipaddress
     try:
         address = ipaddress.ip_address(host)
-        return not (address.is_private or address.is_loopback or address.is_link_local or address.is_reserved)
+        return address.is_global
     except ValueError:
         return True
 
@@ -133,7 +135,9 @@ class InsightService:
         asset = repo.get_asset(conn, tenant_id=tenant_id, asset_id=asset_id)
         if asset is None:
             raise InsightError("ASSET_NOT_FOUND")
-        if asset["source_scope"] == "COMPLAINT_EVIDENCE":
+        if (asset["source_scope"] == "COMPLAINT_EVIDENCE"
+                or asset["lifecycle_status"] in ("REVOKED", "REJECTED")
+                or repo.asset_has_invalid_ancestor(conn, tenant_id=tenant_id, asset_id=asset_id)):
             raise InsightError("COMPLAINT_ASSET_MARKETING_PROHIBITED")
         if asset["scan_status"] != "CHECKED":
             raise InsightError("ASSET_SCAN_REQUIRED")
@@ -148,7 +152,10 @@ class InsightService:
     def bind_asset_to_proposal(self, conn: Any, *, tenant_id: str, proposal_id: str, asset_id: str, rights_grant_id: str,
                                purpose: str, channel: str, language: str) -> None:
         asset, grant = repo.get_asset(conn, tenant_id=tenant_id, asset_id=asset_id), repo.get_rights_grant(conn, tenant_id=tenant_id, grant_id=rights_grant_id)
-        if asset is None or grant is None or grant["asset_id"] != asset_id or asset["source_scope"] == "COMPLAINT_EVIDENCE" or asset["lifecycle_status"] != "AVAILABLE":
+        if (asset is None or grant is None or grant["asset_id"] != asset_id
+                or grant["status"] != "APPROVED" or asset["source_scope"] == "COMPLAINT_EVIDENCE"
+                or asset["lifecycle_status"] != "AVAILABLE"
+                or repo.asset_has_invalid_ancestor(conn, tenant_id=tenant_id, asset_id=asset_id)):
             raise InsightError("ASSET_USE_INVALID")
         if purpose not in grant["permitted_purposes"] or channel not in grant["permitted_channels"] or language not in grant["permitted_languages"]:
             raise InsightError("ASSET_RIGHTS_SCOPE_MISMATCH")
@@ -186,7 +193,7 @@ class InsightService:
         if proposal is None or proposal["revision"] != expected_revision:
             raise InsightError("PROPOSAL_VERSION_CONFLICT")
         uses = repo.usable_asset_uses(conn, tenant_id=tenant_id, proposal_id=proposal_id, now=now)
-        if proposal.get("status", "DISCUSSING") not in ("DISCUSSING", "VALIDATED", "AWAITING_APPROVAL"):
+        if proposal.get("status", "DISCUSSING") not in ("DISCUSSING", "VALIDATED"):
             raise InsightError("PROPOSAL_STATE_INVALID")
         if any(not any(_asset_matches_requirement(use, required) for use in uses) for required in proposal["required_material"]):
             raise InsightError("REQUIRED_MATERIAL_RIGHTS_MISSING")
@@ -204,22 +211,32 @@ class InsightService:
     def create_and_prepare_publications(self, conn: Any, *, tenant_id: str, proposal_id: str, expected_revision: int,
                                         now: str, base_content: dict[str, Any], service_id: str, version: int,
                                         approval_id: str, targets: list[dict[str, str]], base_version: int | None = None,
-                                        publication_service: PublicationService | None = None) -> dict[str, Any]:
+                                        publication_service: PublicationService | None = None,
+                                        connectors: dict[tuple[str, str, str], Any] | None = None) -> dict[str, Any]:
         """Bridge a material-complete proposal into the ENG-03/ENG-08 pipeline.
 
         The service version is never created from a conversational status: the
         caller must supply the durable ApprovalRecord id, which ENG-08 verifies
         against exact content and each channel scope before dispatch rows exist.
         """
-        content = self.approve_proposal_for_service_version(conn, tenant_id=tenant_id, proposal_id=proposal_id,
-            expected_revision=expected_revision, now=now, base_content=base_content)
+        proposal = repo.get_proposal(conn, tenant_id=tenant_id, proposal_id=proposal_id)
+        if proposal is None or proposal["revision"] != expected_revision or proposal.get("status") != "AWAITING_APPROVAL":
+            raise InsightError("PROPOSAL_VERSION_CONFLICT")
+        uses = repo.usable_asset_uses(conn, tenant_id=tenant_id, proposal_id=proposal_id, now=now)
+        if any(not any(_asset_matches_requirement(use, required) for use in uses) for required in proposal["required_material"]):
+            raise InsightError("REQUIRED_MATERIAL_RIGHTS_MISSING")
+        content = dict(base_content)
+        content.update(proposal["content_diff"])
+        content["eng11_proposal"] = {"proposal_id": proposal_id, "proposal_revision": proposal["revision"],
+            "cost_impact": proposal["cost_impact"], "shared_resource_impact": proposal["shared_resource_impact"],
+            "asset_uses": uses}
         publication_service = publication_service or PublicationService()
         version_id = publication_service.create_approved_version(conn, tenant_id=tenant_id, service_id=service_id,
             version=version, content=content, approval_id=approval_id, now=now, base_version=base_version, base_content=base_content)
         intents, blocked = publication_service.prepare_publications(conn, tenant_id=tenant_id, service_version_id=version_id,
-            service_version=version, targets=targets, now=now)
+            service_version=version, targets=targets, now=now, connectors=connectors)
         approved = repo.update_proposal_status(conn, tenant_id=tenant_id, proposal_id=proposal_id,
-            expected_revision=expected_revision + 1, status="APPROVED", allowed_statuses=("AWAITING_APPROVAL",))
+            expected_revision=expected_revision, status="APPROVED", allowed_statuses=("AWAITING_APPROVAL",))
         if approved is None:
             raise InsightError("PROPOSAL_VERSION_CONFLICT")
         return {"service_version_id": version_id, "publication_intents": intents, "blocked_publications": blocked, "proposal": approved}

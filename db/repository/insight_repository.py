@@ -77,6 +77,17 @@ def get_asset(conn: Any, *, tenant_id: str, asset_id: str) -> dict[str, Any] | N
     return _one(conn, "SELECT tenant_id,id,material_request_id,proposal_id,parent_asset_id,source_scope,media_kind,source_ref,content_hash,scan_status,lifecycle_status,metadata FROM asset WHERE tenant_id=%s AND id=%s", _ASSET, (tenant_id, asset_id))
 
 
+def asset_has_invalid_ancestor(conn: Any, *, tenant_id: str, asset_id: str) -> bool:
+    """Reject an asset if it or any source ancestor was revoked or is complaint evidence."""
+    row = conn.execute("""WITH RECURSIVE ancestry AS (
+          SELECT tenant_id,id,parent_asset_id,source_scope,lifecycle_status FROM asset WHERE tenant_id=%s AND id=%s
+          UNION ALL SELECT parent.tenant_id,parent.id,parent.parent_asset_id,parent.source_scope,parent.lifecycle_status
+          FROM asset parent JOIN ancestry child ON (parent.tenant_id=child.tenant_id AND parent.id=child.parent_asset_id)
+       ) SELECT EXISTS (SELECT 1 FROM ancestry WHERE source_scope='COMPLAINT_EVIDENCE'
+          OR lifecycle_status IN ('REVOKED','EXPIRED','REJECTED'))""", (tenant_id, asset_id)).fetchone()
+    return bool(row[0])
+
+
 def create_rights_grant(conn: Any, *, tenant_id: str, grant_id: str, asset_id: str, revision: int, rights_holder_ref: str,
                         purposes: list[str], channels: list[str], languages: list[str], effective_at: str, expires_at: str | None,
                         approval_ref: str) -> dict[str, Any]:
