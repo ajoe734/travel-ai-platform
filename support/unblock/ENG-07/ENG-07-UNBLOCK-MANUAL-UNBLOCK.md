@@ -61,4 +61,3 @@ This is a parent-task source/integration repair, not a reason to claim that
 | Minimum scoped change | This artifact only | No parent source or locked candidate was changed. |
 | Parent concrete next step | This artifact's **Unblocked next step** section | The dispatched-worker guard correctly rejects a helper mutating a different task; Supervisor must write this next step to the parent through its canonical resolution metadata. |
 | Canonical helper delivery | Task branch commit and PR, recorded at helper handoff | Pending after this artifact is committed and pushed. |
-
