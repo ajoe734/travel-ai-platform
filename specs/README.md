@@ -42,3 +42,7 @@ publication projection、渠道使用權限、已知審核中與未知結果分�
 [`db/repository/publication_repository.py`](../db/repository/publication_repository.py)；可用
 `python3 -m unittest tests.publication_service_test -v` 驗證，逐項證據與 PostgreSQL/外部渠道限制見
 [publication/acceptance-trace.md](publication/acceptance-trace.md)。
+
+ENG-10 的實際產出在 [voice/](voice/README.md)：以 tenant-scoped Postgres 記錄 WebRTC、**SIP_TEST**、
+語音回合、改口中斷、驗證後接續、轉接實際結果、非同步音訊收件與安全付款連結交接。它不包含或宣稱
+已連通真實電信帳號；驗收與限制見 [voice/acceptance-trace.md](voice/acceptance-trace.md)。

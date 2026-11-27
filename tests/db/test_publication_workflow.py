@@ -58,7 +58,7 @@ def test_approved_version_is_immutable_and_keeps_old_order_untouched(conn, admin
     assert saved["base_version"] == 1
     assert saved["change_diff"]["changes"]
     with repo_db.tenant_transaction(conn, tenant_a):
-        assert conn.execute("SELECT total_amount_minor_units FROM order_record WHERE tenant_id=%s AND id=%s", (tenant_a, order["order_id"])).fetchone()[0] == 1000
+        assert conn.execute("SELECT total_amount_minor_units FROM order_record WHERE tenant_id=%s AND id=%s", (tenant_a, order["order_id"])).fetchone()[0] == "1000"
     with psycopg.connect(admin_database_url, autocommit=True) as admin_conn:
         with pytest.raises(psycopg.Error):
             admin_conn.execute("UPDATE service_version SET content='{}'::jsonb WHERE tenant_id=%s AND id=%s", (tenant_a, version_id))

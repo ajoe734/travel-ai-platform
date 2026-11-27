@@ -1,4 +1,4 @@
-# 0006 ServiceVersion 與渠道發布
+# 0007 ServiceVersion 與渠道發布
 
 ENG-08 新增不可變 `service_version`、獨立的渠道帳號使用權與每渠道
 `channel_publication` 投影。`desired_version`、`submitted_version`、

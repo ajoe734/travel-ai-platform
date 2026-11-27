@@ -159,6 +159,14 @@
       "source": "SA 08.3 存取與錯誤"
     },
     {
+      "code": "UNSAFE_PAYMENT_HANDOFF_REJECTED",
+      "http_status": 422,
+      "retryable_default": false,
+      "meaning": "語音流程嘗試接收或保存卡號／安全碼等付款資料；只能交付安全付款連結或已授權替代方式。",
+      "source": "SA UC-03",
+      "x_added_by": "ENG-10"
+    },
+    {
       "code": "WORK_PHASE_MISMATCH",
       "http_status": 409,
       "retryable_default": false,
@@ -187,6 +195,46 @@
       "meaning": "取消命令送到時，該 ExecutionTask 已經 dispatch（或已有終態）；取消只阻止未發出的新動作，已發出的動作交核對流程，不回報已取消成功。",
       "source": "work-execution-contract.md §6.3/§9 SD-W-11",
       "x_added_by": "ENG-05"
+    },
+    {
+      "code": "VOICE_SESSION_NOT_FOUND",
+      "http_status": 404,
+      "retryable_default": false,
+      "meaning": "指定語音會話不在目前 tenant。",
+      "source": "SA 08.3; ENG-10",
+      "x_added_by": "ENG-10"
+    },
+    {
+      "code": "CASE_RESUME_VERIFICATION_REQUIRED",
+      "http_status": 403,
+      "retryable_default": false,
+      "meaning": "重撥接續必須通過未過期、未鎖定且未消耗的 CASE_RESUME challenge。",
+      "source": "SA UC-04; SM-03",
+      "x_added_by": "ENG-10"
+    },
+    {
+      "code": "VOICE_STATE_CONFLICT",
+      "http_status": 409,
+      "retryable_default": false,
+      "meaning": "語音狀態轉移不合法，或回合帶有過期 demand/owner revision。",
+      "source": "SA SM-03; BR-15",
+      "x_added_by": "ENG-10"
+    },
+    {
+      "code": "TRANSFER_DESTINATION_REJECTED",
+      "http_status": 422,
+      "retryable_default": false,
+      "meaning": "人工轉接目的地不在已設定清單，或會話未處於可安全轉接的 ACTIVE 狀態。",
+      "source": "SA UC-04; SA-AT-028",
+      "x_added_by": "ENG-10"
+    },
+    {
+      "code": "PAYMENT_HANDOFF_OWNERSHIP_REJECTED",
+      "http_status": 403,
+      "retryable_default": false,
+      "meaning": "付款連結 handoff 的語音會話不存在，或指定訂單不屬於同一 Case。",
+      "source": "SA UC-03; FR-10",
+      "x_added_by": "ENG-10"
     }
   ]
 }

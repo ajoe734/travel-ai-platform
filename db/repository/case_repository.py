@@ -73,3 +73,30 @@ def take_over_ownership(
     if row is None:
         raise ValueError(f"case {tenant_id}/{case_id} not found")
     return row[0]
+
+
+def revise_demand(conn: psycopg.Connection, *, tenant_id: str, case_id: str) -> int:
+    """Atomically create the next demand revision for a spoken correction.
+
+    Callers must separately invalidate/stop their local presentation work; this
+    intentionally does not cancel an already-dispatched ExecutionTask.
+    """
+    row = conn.execute(
+        """
+        UPDATE case_record
+        SET demand_revision = demand_revision + 1
+        WHERE tenant_id = %s AND id = %s
+        RETURNING demand_revision
+        """,
+        (tenant_id, case_id),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"case {tenant_id}/{case_id} not found")
+    return row[0]
+
+
+def revise_demand_with_prior(conn: psycopg.Connection, *, tenant_id: str, case_id: str) -> tuple[int, int]:
+    row = conn.execute("UPDATE case_record SET demand_revision=demand_revision+1 WHERE tenant_id=%s AND id=%s RETURNING demand_revision-1,demand_revision", (tenant_id, case_id)).fetchone()
+    if row is None:
+        raise ValueError(f"case {tenant_id}/{case_id} not found")
+    return row[0], row[1]
