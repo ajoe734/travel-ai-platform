@@ -1,6 +1,6 @@
 # ENG-12 驗收與退修證據
 
-候選 SHA：待 owner closeout commit。相關需求：SA `FR-26`～`FR-28`、`SA-AT-054`、
+退修基線：`40ae76e81ded348b46d4b2e362e6878ce7b84626`（PR #18）。本輪候選 SHA 於 owner push 後記錄。相關需求：SA `FR-26`～`FR-28`、`SA-AT-054`、
 `SA-AT-063`，及 `docs/sd/credit-and-refund.md` §8。
 
 | Finding／驗收項 | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
@@ -10,3 +10,5 @@
 | FR-28：未成交與不完整 usage 也納入期間成本 | `operational_cost_record`、`cost_summary_by_outcome()` | 舊基線沒有成本回流；新 probe 收錄 `UNCONVERTED` QUERY 與 `INCOMPLETE` VOICE，後者金額保留 NULL 不是零 | 同上；`test_cost_reporting_keeps_unconverted_and_incomplete_usage_and_excludes_manual_success` | 供應商最終 usage webhook/查核尚未接入；本模組保存其結果，不模擬真實 provider |
 | FR-28：人工補救不得宣稱全自動成功 | `manual_remediation` 與 `cost_summary_by_outcome()` 中按 Case 聚合的 `bool_or` | 舊基線沒有可稽核的自動成功分母；新 probe 有成功但人工補救的 Case 被排除，另一個純自動 Case 才計 1 | 同上 | 「成功」的業務完成條件仍由 Work/Execution 契約判定；這裡只提供成本報表的排除規則 |
 | SA-AT-063：貨幣不可混合、無浮點重算 | 所有金額採 `bigint` minor units、currency／scale reference，contract-to-charge 與 settlement self-reference 均綁同幣別 | 舊基線缺計費/結算資料模型；新版 schema 對跨幣別 FK 與整數金額設 constraint | `python3 scripts/validate_repository.py` → exit 0；真正 migration parse/constraint 行為待 hosted PostgreSQL | 未在本 VM 開 DB；未接法定匯率或稅務規則 |
+| F1/F2/F5：不可變表冪等、退款沖回與歸因約束 | `billing_repository._lock_keys()`、`record_settlement_reversal()`；0010 settlement composite FK、正負符號、渠道佣金約束 | 前候選以 `FOR UPDATE` 讀不可變表會遭 app_role 拒絕，且退款 SQL 欄位歧義；本輪以 advisory lock + 不加鎖讀取，並明確選取 `p.order_id/p.currency` | `python3 -m py_compile db/repository/billing_repository.py` → exit 0；DB probe 待 hosted PostgreSQL | 本機沒有 PostgreSQL／psycopg，RLS/FK runtime probe 待 CI |
+| F4/F6：SA-AT-054 final usage 與人工補救 | `operational_cost_record.supersedes_cost_id`；`record_operational_cost()` append finalization；`cost_summary_by_outcome()` | INCOMPLETE 保留 NULL 金額；延遲 ACTUAL 追加 linked row 並排除 placeholder，HUMAN（即使未標 manual_remediation）排除全自動成功 | `pytest tests/db/test_billing_settlement_cost.py -v` 待 hosted PostgreSQL；新 probe `test_late_final_usage_appends_actual_cost_and_excludes_incomplete_placeholder` | 本機無 DB runtime，未宣稱通過 |

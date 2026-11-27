@@ -136,3 +136,22 @@ def test_cost_reporting_keeps_unconverted_and_incomplete_usage_and_excludes_manu
     assert summary["automatic_success_case_count"] == 1
     assert any(row["outcome"] == "UNCONVERTED" and row["amount_minor_units"] == 3 for row in summary["by_outcome"])
     assert any(row["cost_status"] == "INCOMPLETE" and row["amount_minor_units"] is None for row in summary["by_outcome"])
+
+
+def test_late_final_usage_appends_actual_cost_and_excludes_incomplete_placeholder(conn, tenant_a, case_factory):
+    case_id = case_factory(tenant_a)
+    common = dict(tenant_id=tenant_a, case_id=case_id, order_id=None, business_key="voice:late:1",
+                  request_hash=sha256_hex("voice:late:1"), cost_kind="VOICE", outcome="FAILED",
+                  manual_remediation=False, quantity="12.50", unit="second", occurred_at=_NOW,
+                  evidence={"provider": "mock"})
+    with repo_db.tenant_transaction(conn, tenant_a):
+        incomplete = billing_repository.record_operational_cost(
+            conn, cost_id=str(uuid.uuid4()), cost_status="INCOMPLETE", amount_minor_units=None,
+            currency=None, currency_scale_ref=None, provider_usage_ref=None, **common)
+        actual = billing_repository.record_operational_cost(
+            conn, cost_id=str(uuid.uuid4()), cost_status="ACTUAL", amount_minor_units=12,
+            currency="JPY", currency_scale_ref="iso4217-minor-unit-0", provider_usage_ref="voice-final-1", **common)
+        summary = billing_repository.cost_summary_by_outcome(conn, tenant_id=tenant_a, period_start=_NOW, period_end=_END)
+    assert actual["supersedes_cost_id"] == incomplete["id"]
+    assert not any(row["cost_status"] == "INCOMPLETE" for row in summary["by_outcome"])
+    assert any(row["currency"] == "JPY" and row["amount_minor_units"] == 12 for row in summary["by_outcome"])

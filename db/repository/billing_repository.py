@@ -9,6 +9,7 @@ authoritative isolation boundary.
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from typing import Any
 
 import psycopg
@@ -39,12 +40,27 @@ _COST_COLUMNS = [
     "tenant_id", "id", "case_id", "order_id", "business_key", "request_hash",
     "cost_kind", "outcome", "cost_status", "manual_remediation", "quantity", "unit",
     "amount_minor_units", "currency", "currency_scale_ref", "provider_usage_ref",
-    "occurred_at", "evidence", "created_at",
+    "occurred_at", "evidence", "supersedes_cost_id", "created_at",
 ]
 
 
 def _row(columns: list[str], value: Any) -> dict[str, Any]:
     return row_as_dict(columns, value)
+
+
+def _lock_keys(conn: psycopg.Connection, *keys: str) -> None:
+    """Serialize immutable keys without asking app_role for UPDATE privilege."""
+    for key in sorted(set(keys)):
+        conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (key,))
+
+
+def _same_cost(result: dict[str, Any], expected: tuple[Any, ...]) -> bool:
+    actual = (str(result["case_id"]), str(result["order_id"]) if result["order_id"] else None,
+              result["request_hash"], result["cost_kind"], result["outcome"], result["cost_status"],
+              result["manual_remediation"], Decimal(str(result["quantity"])), result["unit"],
+              result["amount_minor_units"], result["currency"], result["currency_scale_ref"],
+              result["provider_usage_ref"])
+    return actual == (*expected[:7], Decimal(str(expected[7])), *expected[8:])
 
 
 def create_contract_version(
@@ -70,9 +86,10 @@ def record_business_fee(
     occurred_at: str, evidence: dict[str, Any],
 ) -> dict[str, Any]:
     """Record a contract-versioned fee once per stable business operation."""
+    _lock_keys(conn, f"{tenant_id}:business-fee:{business_key}")
     existing = conn.execute(
         f"SELECT {', '.join(_FEE_COLUMNS)} FROM business_fee_charge "
-        "WHERE tenant_id=%s AND operation='ENTERPRISE_USAGE_FEE' AND business_key=%s FOR UPDATE",
+        "WHERE tenant_id=%s AND operation='ENTERPRISE_USAGE_FEE' AND business_key=%s",
         (tenant_id, business_key),
     ).fetchone()
     if existing is not None:
@@ -104,9 +121,10 @@ def record_order_attribution(
     source_channel: str | None, source_customer_ref: str | None, evidence: dict[str, Any],
     attributed_at: str,
 ) -> dict[str, Any]:
+    _lock_keys(conn, f"{tenant_id}:attribution:{order_id}")
     existing = conn.execute(
         f"SELECT {', '.join(_ATTRIBUTION_COLUMNS)} FROM order_attribution "
-        "WHERE tenant_id=%s AND order_id=%s FOR UPDATE", (tenant_id, order_id),
+        "WHERE tenant_id=%s AND order_id=%s", (tenant_id, order_id),
     ).fetchone()
     if existing is not None:
         result = _row(_ATTRIBUTION_COLUMNS, existing)
@@ -134,6 +152,7 @@ def record_settlement_entry(
     """Append original GMV/revenue/commission/payable rows, never a reversal."""
     if amount_minor_units <= 0:
         raise ValueError("original settlement entries must be positive; use record_settlement_reversal")
+    _lock_keys(conn, f"{tenant_id}:settlement:{business_key}")
     attribution = conn.execute(
         "SELECT attribution_kind FROM order_attribution WHERE tenant_id=%s AND order_id=%s",
         (tenant_id, order_id),
@@ -142,7 +161,7 @@ def record_settlement_entry(
         raise RepositoryError("settlement entry must use the persisted order attribution")
     existing = conn.execute(
         f"SELECT {', '.join(_SETTLEMENT_COLUMNS)} FROM settlement_entry "
-        "WHERE tenant_id=%s AND business_key=%s FOR UPDATE", (tenant_id, business_key),
+        "WHERE tenant_id=%s AND business_key=%s", (tenant_id, business_key),
     ).fetchone()
     if existing is not None:
         result = _row(_SETTLEMENT_COLUMNS, existing)
@@ -173,9 +192,10 @@ def record_settlement_reversal(
     The source entry is locked and the sum of prior reversals is checked, so
     duplicate refund delivery cannot over-reverse a commission or revenue row.
     """
+    _lock_keys(conn, f"{tenant_id}:settlement:{business_key}", f"{tenant_id}:settlement-source:{original_entry_id}")
     existing = conn.execute(
         f"SELECT {', '.join(_SETTLEMENT_COLUMNS)} FROM settlement_entry "
-        "WHERE tenant_id=%s AND business_key=%s FOR UPDATE", (tenant_id, business_key),
+        "WHERE tenant_id=%s AND business_key=%s", (tenant_id, business_key),
     ).fetchone()
     if existing is not None:
         result = _row(_SETTLEMENT_COLUMNS, existing)
@@ -186,20 +206,20 @@ def record_settlement_reversal(
     if amount_minor_units <= 0:
         raise ValueError("reversal amount must be positive before its ledger sign is applied")
     refund = conn.execute(
-        "SELECT order_id,currency,state FROM refund r JOIN payment p ON (p.tenant_id=r.tenant_id AND p.id=r.payment_id) "
-        "WHERE r.tenant_id=%s AND r.id=%s FOR UPDATE OF r,p",
+        "SELECT p.order_id,p.currency,r.state FROM refund r JOIN payment p ON (p.tenant_id=r.tenant_id AND p.id=r.payment_id) "
+        "WHERE r.tenant_id=%s AND r.id=%s",
         (tenant_id, refund_id),
     ).fetchone()
     if refund is None or refund[2] != "SUCCEEDED":
         raise RepositoryError("settlement reversal requires a succeeded refund with formal evidence")
     original = conn.execute(
         f"SELECT {', '.join(_SETTLEMENT_COLUMNS)} FROM settlement_entry "
-        "WHERE tenant_id=%s AND id=%s FOR UPDATE", (tenant_id, original_entry_id),
+        "WHERE tenant_id=%s AND id=%s", (tenant_id, original_entry_id),
     ).fetchone()
     if original is None:
         raise RepositoryError("original settlement entry not found")
     source = _row(_SETTLEMENT_COLUMNS, original)
-    if source["order_id"] != refund[0] or source["currency"] != refund[1] or source["amount_minor_units"] <= 0:
+    if str(source["order_id"]) != str(refund[0]) or source["currency"] != refund[1] or source["amount_minor_units"] <= 0:
         raise RepositoryError("refund and original settlement entry do not form a valid reversal pair")
     reversed_so_far = conn.execute(
         "SELECT COALESCE(-SUM(amount_minor_units), 0) FROM settlement_entry "
@@ -227,6 +247,7 @@ def record_operational_cost(
     currency: str | None, currency_scale_ref: str | None, provider_usage_ref: str | None,
     occurred_at: str, evidence: dict[str, Any],
 ) -> dict[str, Any]:
+    _lock_keys(conn, f"{tenant_id}:cost:{business_key}", *(() if provider_usage_ref is None else (f"{tenant_id}:provider-usage:{provider_usage_ref}",)))
     if order_id is not None:
         belongs = conn.execute(
             "SELECT 1 FROM order_record WHERE tenant_id=%s AND id=%s AND case_id=%s",
@@ -236,23 +257,46 @@ def record_operational_cost(
             raise RepositoryError("operational cost order must belong to the same case")
     existing = conn.execute(
         f"SELECT {', '.join(_COST_COLUMNS)} FROM operational_cost_record "
-        "WHERE tenant_id=%s AND business_key=%s FOR UPDATE", (tenant_id, business_key),
+        "WHERE tenant_id=%s AND business_key=%s", (tenant_id, business_key),
     ).fetchone()
     if existing is not None:
         result = _row(_COST_COLUMNS, existing)
         expected = (case_id, order_id, request_hash, cost_kind, outcome, cost_status, manual_remediation,
-                    str(quantity), unit, amount_minor_units, currency, currency_scale_ref, provider_usage_ref)
-        actual = (str(result["case_id"]), str(result["order_id"]) if result["order_id"] else None,
-                  result["request_hash"], result["cost_kind"], result["outcome"], result["cost_status"],
-                  result["manual_remediation"], str(result["quantity"]), result["unit"],
-                  result["amount_minor_units"], result["currency"], result["currency_scale_ref"], result["provider_usage_ref"])
-        if actual != expected:
+                    quantity, unit, amount_minor_units, currency, currency_scale_ref, provider_usage_ref)
+        if not _same_cost(result, expected):
+            # Provider final usage corrects an immutable INCOMPLETE evidence row
+            # by appending one linked ACTUAL row; it never rewrites or re-bills it.
+            if result["cost_status"] == "INCOMPLETE" and cost_status == "ACTUAL":
+                final_key = f"{business_key}:final"
+                final = conn.execute(
+                    f"SELECT {', '.join(_COST_COLUMNS)} FROM operational_cost_record "
+                    "WHERE tenant_id=%s AND business_key=%s", (tenant_id, final_key),
+                ).fetchone()
+                if final is not None:
+                    final_result = _row(_COST_COLUMNS, final)
+                    if final_result["supersedes_cost_id"] == result["id"] and _same_cost(final_result, expected):
+                        return final_result
+                    raise IdempotencyConflict("final provider usage is already bound to different cost content")
+                row = conn.execute(
+                    f"""INSERT INTO operational_cost_record
+                        (tenant_id,id,case_id,order_id,business_key,request_hash,cost_kind,outcome,cost_status,
+                         manual_remediation,quantity,unit,amount_minor_units,currency,currency_scale_ref,
+                         provider_usage_ref,occurred_at,evidence,supersedes_cost_id)
+                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                        ON CONFLICT DO NOTHING RETURNING {', '.join(_COST_COLUMNS)}""",
+                    (tenant_id, cost_id, case_id, order_id, final_key, request_hash, cost_kind, outcome,
+                     cost_status, manual_remediation, quantity, unit, amount_minor_units, currency,
+                     currency_scale_ref, provider_usage_ref, occurred_at, json.dumps(evidence), result["id"]),
+                ).fetchone()
+                if row is not None:
+                    return _row(_COST_COLUMNS, row)
+                raise IdempotencyConflict("final provider usage is already bound to another cost event")
             raise IdempotencyConflict("cost business key was replayed with different content")
         return result
     if provider_usage_ref is not None:
         provider_existing = conn.execute(
             f"SELECT {', '.join(_COST_COLUMNS)} FROM operational_cost_record "
-            "WHERE tenant_id=%s AND provider_usage_ref=%s FOR UPDATE", (tenant_id, provider_usage_ref),
+            "WHERE tenant_id=%s AND provider_usage_ref=%s", (tenant_id, provider_usage_ref),
         ).fetchone()
         if provider_existing is not None:
             raise IdempotencyConflict("provider usage was already recorded under another business key")
@@ -260,8 +304,8 @@ def record_operational_cost(
         f"""INSERT INTO operational_cost_record
             (tenant_id,id,case_id,order_id,business_key,request_hash,cost_kind,outcome,cost_status,
              manual_remediation,quantity,unit,amount_minor_units,currency,currency_scale_ref,
-             provider_usage_ref,occurred_at,evidence)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+             provider_usage_ref,occurred_at,evidence,supersedes_cost_id)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL)
             RETURNING {', '.join(_COST_COLUMNS)}""",
         (tenant_id, cost_id, case_id, order_id, business_key, request_hash, cost_kind, outcome,
          cost_status, manual_remediation, quantity, unit, amount_minor_units, currency,
@@ -282,6 +326,9 @@ def cost_summary_by_outcome(
         """SELECT outcome, cost_status, currency, SUM(amount_minor_units), COUNT(*)
            FROM operational_cost_record
            WHERE tenant_id=%s AND occurred_at >= %s AND occurred_at < %s
+             AND NOT EXISTS (SELECT 1 FROM operational_cost_record final
+                             WHERE final.tenant_id=operational_cost_record.tenant_id
+                               AND final.supersedes_cost_id=operational_cost_record.id)
            GROUP BY outcome, cost_status, currency ORDER BY outcome, cost_status, currency""",
         (tenant_id, period_start, period_end),
     ).fetchall()
@@ -291,6 +338,10 @@ def cost_summary_by_outcome(
                      bool_or(outcome = 'SUCCEEDED') AS had_success
               FROM operational_cost_record
               WHERE tenant_id=%s AND occurred_at >= %s AND occurred_at < %s
+                AND NOT EXISTS (SELECT 1 FROM operational_cost_record human
+                                WHERE human.tenant_id=operational_cost_record.tenant_id
+                                  AND human.case_id=operational_cost_record.case_id
+                                  AND (human.manual_remediation OR human.cost_kind='HUMAN'))
               GROUP BY case_id
            ) cases WHERE had_success AND NOT had_manual""",
         (tenant_id, period_start, period_end),

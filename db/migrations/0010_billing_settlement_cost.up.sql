@@ -67,6 +67,7 @@ CREATE TABLE order_attribution (
     evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
     attributed_at timestamptz NOT NULL,
     PRIMARY KEY (tenant_id, order_id),
+    UNIQUE (tenant_id, order_id, attribution_kind),
     FOREIGN KEY (tenant_id, order_id) REFERENCES order_record(tenant_id, id),
     CONSTRAINT order_attribution_channel_required CHECK (
         attribution_kind <> 'CHANNEL_CUSTOMER' OR source_channel IS NOT NULL
@@ -100,14 +101,23 @@ CREATE TABLE settlement_entry (
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, business_key),
     UNIQUE (tenant_id, id, currency),
+    UNIQUE (tenant_id, id, order_id, entry_kind, attribution_kind, currency),
     FOREIGN KEY (tenant_id, order_id) REFERENCES order_record(tenant_id, id),
     FOREIGN KEY (tenant_id, refund_id) REFERENCES refund(tenant_id, id),
     FOREIGN KEY (tenant_id, contract_version_id, currency)
         REFERENCES billing_contract_version(tenant_id, id, currency),
-    FOREIGN KEY (tenant_id, reversal_of, currency)
-        REFERENCES settlement_entry(tenant_id, id, currency),
+    FOREIGN KEY (tenant_id, order_id, attribution_kind)
+        REFERENCES order_attribution(tenant_id, order_id, attribution_kind),
+    FOREIGN KEY (tenant_id, reversal_of, order_id, entry_kind, attribution_kind, currency)
+        REFERENCES settlement_entry(tenant_id, id, order_id, entry_kind, attribution_kind, currency),
     CONSTRAINT settlement_reversal_shape CHECK (
         (reversal_of IS NULL AND refund_id IS NULL) OR (reversal_of IS NOT NULL AND refund_id IS NOT NULL)
+    ),
+    CONSTRAINT settlement_entry_sign_shape CHECK (
+        (reversal_of IS NULL AND amount_minor_units > 0) OR (reversal_of IS NOT NULL AND amount_minor_units < 0)
+    ),
+    CONSTRAINT settlement_channel_commission_attribution CHECK (
+        entry_kind <> 'CHANNEL_COMMISSION' OR attribution_kind = 'CHANNEL_CUSTOMER'
     )
 );
 CREATE TRIGGER settlement_entry_immutable BEFORE UPDATE OR DELETE ON settlement_entry
@@ -140,6 +150,7 @@ CREATE TABLE operational_cost_record (
     currency text CHECK (currency IS NULL OR currency ~ '^[A-Z]{3}$'),
     currency_scale_ref text,
     provider_usage_ref text,
+    supersedes_cost_id uuid,
     occurred_at timestamptz NOT NULL,
     evidence jsonb NOT NULL DEFAULT '{}'::jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
@@ -147,12 +158,13 @@ CREATE TABLE operational_cost_record (
     UNIQUE (tenant_id, business_key),
     FOREIGN KEY (tenant_id, case_id) REFERENCES case_record(tenant_id, id),
     FOREIGN KEY (tenant_id, order_id) REFERENCES order_record(tenant_id, id),
+    FOREIGN KEY (tenant_id, supersedes_cost_id) REFERENCES operational_cost_record(tenant_id, id),
     CONSTRAINT operational_cost_amount_shape CHECK (
         (amount_minor_units IS NULL AND currency IS NULL AND currency_scale_ref IS NULL)
         OR (amount_minor_units IS NOT NULL AND amount_minor_units >= 0 AND currency IS NOT NULL AND currency_scale_ref IS NOT NULL)
     ),
-    CONSTRAINT operational_cost_incomplete_has_no_amount CHECK (
-        cost_status <> 'INCOMPLETE' OR amount_minor_units IS NULL
+    CONSTRAINT operational_cost_incomplete_amount_shape CHECK (
+        (cost_status = 'INCOMPLETE') = (amount_minor_units IS NULL)
     )
 );
 CREATE TRIGGER operational_cost_record_immutable BEFORE UPDATE OR DELETE ON operational_cost_record
@@ -167,5 +179,8 @@ GRANT SELECT, INSERT ON operational_cost_record TO app_role;
 CREATE UNIQUE INDEX operational_cost_provider_usage_dedupe
     ON operational_cost_record (tenant_id, provider_usage_ref)
     WHERE provider_usage_ref IS NOT NULL;
+CREATE UNIQUE INDEX operational_cost_one_finalization_per_incomplete
+    ON operational_cost_record (tenant_id, supersedes_cost_id)
+    WHERE supersedes_cost_id IS NOT NULL;
 
 COMMIT;
