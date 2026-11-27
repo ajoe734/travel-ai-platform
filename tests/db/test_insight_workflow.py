@@ -12,7 +12,8 @@ from connectors.mocks.ota_delayed_publication import OtaDelayedPublicationMock
 from db.repository import approval_repository, db as repo_db, insight_repository, publication_repository
 from services.authorization import canonical_json
 from services.insights import InsightError, InsightService
-from services.publication import PublicationError, PublicationService
+from services.publication import PublicationService
+from services.publication.service import PublicationError
 
 
 def _hash(value: str) -> str:
