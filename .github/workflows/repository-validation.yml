@@ -62,7 +62,7 @@ jobs:
           echo "::group::upgrade from empty database"
           python3 db/migrate.py upgrade
           python3 db/migrate.py status
-          assert_applied_count 6
+            assert_applied_count 7
           echo "::endgroup::"
 
           echo "::group::full rollback"
@@ -74,7 +74,7 @@ jobs:
           echo "::group::rebuild"
           python3 db/migrate.py upgrade
           python3 db/migrate.py status
-          assert_applied_count 6
+            assert_applied_count 7
           echo "::endgroup::"
 
   db-repository-tests:

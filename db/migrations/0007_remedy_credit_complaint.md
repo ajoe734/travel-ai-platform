@@ -1,4 +1,4 @@
-# 0006_remedy_credit_complaint
+# 0007_remedy_credit_complaint
 
 ENG-07 extends the existing `payment`/`refund` primitive without changing its
 original-payment reservation rule. `remedy_preview` is immutable and binds the
