@@ -13,6 +13,17 @@ from .rows import row_as_dict
 _SESSION = ["tenant_id", "id", "case_id", "transport", "provider_session_ref", "status", "recording_policy", "recording_status", "case_owner_revision", "created_at", "updated_at"]
 
 
+def lock_session_and_case(conn: psycopg.Connection, *, tenant_id: str, session_id: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    """Lock in the same order for a turn, correction, and transfer result."""
+    session_row = conn.execute(f"SELECT {', '.join(_SESSION)} FROM voice_session WHERE tenant_id=%s AND id=%s FOR UPDATE", (tenant_id, session_id)).fetchone()
+    if session_row is None:
+        return None
+    case_row = conn.execute("SELECT id,demand_revision,owner_revision FROM case_record WHERE tenant_id=%s AND id=%s FOR UPDATE", (tenant_id, session_row[2])).fetchone()
+    if case_row is None:
+        return None
+    return row_as_dict(_SESSION, session_row), {"id": case_row[0], "demand_revision": case_row[1], "owner_revision": case_row[2]}
+
+
 def create_session(conn: psycopg.Connection, *, tenant_id: str, session_id: str, case_id: str, transport: str, provider_session_ref: str, recording_policy: dict[str, Any], recording_status: str, case_owner_revision: int) -> dict[str, Any]:
     row = conn.execute(
         f"""INSERT INTO voice_session (tenant_id,id,case_id,transport,provider_session_ref,status,recording_policy,recording_status,case_owner_revision)
@@ -49,15 +60,15 @@ def set_recording_status(conn: psycopg.Connection, *, tenant_id: str, session_id
     conn.execute("UPDATE voice_session SET recording_status=%s WHERE tenant_id=%s AND id=%s", (status, tenant_id, session_id))
 
 
-def append_turn(conn: psycopg.Connection, *, tenant_id: str, turn_id: str, session_id: str, demand_revision: int, status: str, transcript_ref: str | None) -> None:
+def append_turn(conn: psycopg.Connection, *, tenant_id: str, turn_id: str, session_id: str, demand_revision: int, status: str, transcript_ref: str | None, confirmed_fields: dict[str, Any] | None = None) -> None:
     conn.execute("SELECT id FROM voice_session WHERE tenant_id=%s AND id=%s FOR UPDATE", (tenant_id, session_id)).fetchone()
     turn_no = conn.execute("SELECT COALESCE(MAX(turn_no),0)+1 FROM voice_turn WHERE tenant_id=%s AND session_id=%s", (tenant_id, session_id)).fetchone()[0]
-    conn.execute("INSERT INTO voice_turn (tenant_id,id,session_id,turn_no,demand_revision,status,transcript_ref) VALUES (%s,%s,%s,%s,%s,%s,%s)", (tenant_id, turn_id, session_id, turn_no, demand_revision, status, transcript_ref))
+    conn.execute("INSERT INTO voice_turn (tenant_id,id,session_id,turn_no,demand_revision,status,transcript_ref,confirmed_fields) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)", (tenant_id, turn_id, session_id, turn_no, demand_revision, status, transcript_ref, json.dumps(confirmed_fields) if confirmed_fields is not None else None))
 
 
 def interrupt_for_new_demand(conn: psycopg.Connection, *, tenant_id: str, session_id: str, prior_demand_revision: int) -> None:
     conn.execute("UPDATE voice_playback SET status='INTERRUPTED' WHERE tenant_id=%s AND session_id=%s AND demand_revision=%s AND status IN ('QUEUED','PLAYING')", (tenant_id, session_id, prior_demand_revision))
-    conn.execute("UPDATE voice_turn SET status='SUPERSEDED' WHERE tenant_id=%s AND session_id=%s AND demand_revision=%s AND status IN ('PARTIAL','FINAL','CONFIRMED')", (tenant_id, session_id, prior_demand_revision))
+    conn.execute("UPDATE voice_turn SET status='SUPERSEDED' WHERE tenant_id=%s AND session_id=%s AND demand_revision<=%s AND status IN ('PARTIAL','FINAL','CONFIRMED')", (tenant_id, session_id, prior_demand_revision))
 
 
 def create_playback(conn: psycopg.Connection, *, tenant_id: str, playback_id: str, session_id: str, demand_revision: int) -> None:
@@ -72,23 +83,45 @@ def set_playback_status(conn: psycopg.Connection, *, tenant_id: str, playback_id
     conn.execute("UPDATE voice_playback SET status=%s WHERE tenant_id=%s AND id=%s", (status, tenant_id, playback_id))
 
 
-def create_transfer(conn: psycopg.Connection, *, tenant_id: str, transfer_id: str, session_id: str, destination_ref: str) -> None:
+def create_transfer_from_active(conn: psycopg.Connection, *, tenant_id: str, transfer_id: str, session_id: str, destination_ref: str) -> None:
+    locked = lock_session_and_case(conn, tenant_id=tenant_id, session_id=session_id)
+    if locked is None or locked[0]["status"] != "ACTIVE":
+        raise RuntimeError("transfer requires ACTIVE voice session")
     conn.execute("INSERT INTO voice_transfer (tenant_id,id,session_id,destination_ref,status) VALUES (%s,%s,%s,%s,'REQUESTED')", (tenant_id, transfer_id, session_id, destination_ref))
+    conn.execute("UPDATE voice_session SET status='TRANSFERRING' WHERE tenant_id=%s AND id=%s", (tenant_id, session_id))
 
 
 def set_transfer_status(conn: psycopg.Connection, *, tenant_id: str, transfer_id: str, status: str, provider_result_ref: str | None) -> dict[str, Any]:
-    current = conn.execute("SELECT status FROM voice_transfer WHERE tenant_id=%s AND id=%s FOR UPDATE", (tenant_id, transfer_id)).fetchone()
+    current = conn.execute("SELECT session_id,status,provider_result_ref FROM voice_transfer WHERE tenant_id=%s AND id=%s FOR UPDATE", (tenant_id, transfer_id)).fetchone()
     allowed = {"REQUESTED": {"RINGING", "FAILED"}, "RINGING": {"CONNECTED", "FAILED"}, "CONNECTED": set(), "FAILED": set()}
-    if current is None or status not in allowed[current[0]]:
+    if current is None:
+        raise RuntimeError("voice transfer not found")
+    locked = lock_session_and_case(conn, tenant_id=tenant_id, session_id=current[0])
+    if locked is None or (status != "CONNECTED" and status not in allowed[current[1]]):
         raise RuntimeError("invalid transfer transition")
+    session, case = locked
+    # Duplicate provider CONNECTED webhooks are a no-op once handoff completed;
+    # no second owner_revision bump is permitted.
+    if status == "CONNECTED" and current[1] == "CONNECTED":
+        return {"status": "CONNECTED", "provider_result_ref": current[2], "case_id": case["id"], "newly_connected": False}
+    if session["status"] != "TRANSFERRING":
+        raise RuntimeError("transfer result requires TRANSFERRING voice session")
+    if status == "CONNECTED" and (current[1] not in allowed or status not in allowed[current[1]] or session["status"] != "TRANSFERRING"):
+        raise RuntimeError("invalid transfer/session transition")
+    if status == "FAILED" and session["status"] != "TRANSFERRING":
+        raise RuntimeError("transfer cannot reactivate a non-transferring session")
     row = conn.execute("UPDATE voice_transfer SET status=%s, provider_result_ref=COALESCE(%s,provider_result_ref) WHERE tenant_id=%s AND id=%s RETURNING status,provider_result_ref", (status, provider_result_ref, tenant_id, transfer_id)).fetchone()
     if row is None:
         raise ValueError("voice transfer not found")
-    return {"status": row[0], "provider_result_ref": row[1]}
+    if status == "FAILED":
+        conn.execute("UPDATE voice_session SET status='ACTIVE' WHERE tenant_id=%s AND id=%s", (tenant_id, current[0]))
+    elif status == "CONNECTED":
+        conn.execute("UPDATE voice_session SET status='CLOSED' WHERE tenant_id=%s AND id=%s", (tenant_id, current[0]))
+    return {"status": row[0], "provider_result_ref": row[1], "case_id": case["id"], "newly_connected": status == "CONNECTED"}
 
 
 def receive_asynchronous_media(conn: psycopg.Connection, *, tenant_id: str, intake_id: str, case_id: str, producer_ref: str, source_event_id: str, media_kind: str, asset_ref: str) -> bool:
-    payload_hash = hashlib.sha256(f"{case_id}|{media_kind}|{asset_ref}".encode()).hexdigest()
+    payload_hash = hashlib.sha256(json.dumps({"asset_ref": asset_ref, "case_id": case_id, "media_kind": media_kind}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     row = conn.execute("""INSERT INTO asynchronous_media_intake (tenant_id,id,case_id,producer_ref,source_event_id,media_kind,asset_ref,payload_hash,status)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'RECEIVED') ON CONFLICT (tenant_id,producer_ref,source_event_id) DO NOTHING RETURNING id""", (tenant_id, intake_id, case_id, producer_ref, source_event_id, media_kind, asset_ref, payload_hash)).fetchone()
     if row:
@@ -109,6 +142,11 @@ def set_media_status(conn: psycopg.Connection, *, tenant_id: str, intake_id: str
 
 def create_resume_challenge(conn: psycopg.Connection, *, tenant_id: str, challenge_id: str, session_id: str, proof: str, expires_at: str) -> None:
     conn.execute("INSERT INTO voice_resume_challenge (tenant_id,id,session_id,proof_hash,expires_at) VALUES (%s,%s,%s,%s,%s)", (tenant_id, challenge_id, session_id, hashlib.sha256(proof.encode()).hexdigest(), expires_at))
+
+
+def resume_challenge_can_issue(conn: psycopg.Connection, *, tenant_id: str, session_id: str) -> bool:
+    row = conn.execute("SELECT 1 FROM voice_resume_challenge WHERE tenant_id=%s AND session_id=%s AND locked_at IS NOT NULL LIMIT 1 FOR UPDATE", (tenant_id, session_id)).fetchone()
+    return row is None
 
 
 def consume_resume_challenge(conn: psycopg.Connection, *, tenant_id: str, challenge_id: str, session_id: str, proof: str) -> bool:
