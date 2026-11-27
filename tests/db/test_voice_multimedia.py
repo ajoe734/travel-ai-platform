@@ -138,8 +138,11 @@ def test_media_recording_payment_ownership_and_transport_rejections(conn, tenant
         service.set_media_status(conn, tenant_id=tenant_a, intake_id=intake_id, status="SCANNING")
         service.set_media_status(conn, tenant_id=tenant_a, intake_id=intake_id, status="READY")
         with pytest.raises(VoiceStateConflict): service.set_media_status(conn, tenant_id=tenant_a, intake_id=intake_id, status="REJECTED")
+        # Keep the outer tenant command usable after proving the trigger by
+        # containing PostgreSQL's failed statement in a savepoint.
         with pytest.raises(Exception):
-            conn.execute("DELETE FROM asynchronous_media_intake WHERE tenant_id=%s AND id=%s", (tenant_a, intake_id))
+            with conn.transaction():
+                conn.execute("DELETE FROM asynchronous_media_intake WHERE tenant_id=%s AND id=%s", (tenant_a, intake_id))
         with pytest.raises(PaymentHandoffOwnershipRejected): service.create_payment_link_handoff(conn, tenant_id=tenant_a, session_id=session["id"], payment_link_ref="https://pay.example.com/a", order_id=order_id)
         with pytest.raises(PaymentHandoffOwnershipRejected): service.create_payment_link_handoff(conn, tenant_id=tenant_a, session_id="00000000-0000-4000-8000-000000000777", payment_link_ref="https://pay.example.com/a")
         for link in ("https://pay.example.com/?ref=4111-1111-1111-1111", "https://pay.example.com/#pan=4111-1111-1111-1111&cvv=123", "https://pay.example.com/?security_code=123", "https://:secret@pay.example.com/a", "https:///no-host"):
