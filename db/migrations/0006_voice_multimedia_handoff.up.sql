@@ -34,6 +34,7 @@ CREATE TABLE voice_turn (
     demand_revision integer NOT NULL CHECK (demand_revision >= 1),
     status text NOT NULL CHECK (status IN ('PARTIAL', 'FINAL', 'CONFIRMED', 'SUPERSEDED')),
     transcript_ref text,
+    confirmed_fields jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, session_id, turn_no),
@@ -84,19 +85,39 @@ CREATE TABLE asynchronous_media_intake (
     id uuid NOT NULL,
     case_id uuid NOT NULL,
     source_event_id text NOT NULL,
+    producer_ref text NOT NULL,
+    payload_hash text NOT NULL CHECK (payload_hash ~ '^[0-9a-f]{64}$'),
     media_kind text NOT NULL CHECK (media_kind IN ('AUDIO_MESSAGE', 'IMAGE', 'VIDEO', 'DOCUMENT')),
     asset_ref text NOT NULL,
     status text NOT NULL CHECK (status IN ('RECEIVED', 'SCANNING', 'READY', 'REJECTED')),
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, id),
-    UNIQUE (tenant_id, source_event_id),
+    UNIQUE (tenant_id, producer_ref, source_event_id),
     FOREIGN KEY (tenant_id, case_id) REFERENCES case_record(tenant_id, id)
 );
-CREATE TRIGGER asynchronous_media_intake_immutable BEFORE UPDATE OR DELETE ON asynchronous_media_intake FOR EACH ROW EXECUTE FUNCTION forbid_update_delete();
+CREATE TRIGGER asynchronous_media_intake_no_delete BEFORE DELETE ON asynchronous_media_intake FOR EACH ROW EXECUTE FUNCTION forbid_update_delete();
 ALTER TABLE asynchronous_media_intake ENABLE ROW LEVEL SECURITY;
 ALTER TABLE asynchronous_media_intake FORCE ROW LEVEL SECURITY;
 CREATE POLICY asynchronous_media_intake_tenant_isolation ON asynchronous_media_intake USING (tenant_id = current_setting('app.tenant_id', true)::uuid) WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
-GRANT SELECT, INSERT ON asynchronous_media_intake TO app_role;
+GRANT SELECT, INSERT, UPDATE ON asynchronous_media_intake TO app_role;
+
+CREATE TABLE voice_resume_challenge (
+    tenant_id uuid NOT NULL,
+    id uuid NOT NULL,
+    session_id uuid NOT NULL,
+    proof_hash text NOT NULL CHECK (proof_hash ~ '^[0-9a-f]{64}$'),
+    expires_at timestamptz NOT NULL,
+    failed_attempts integer NOT NULL DEFAULT 0 CHECK (failed_attempts >= 0 AND failed_attempts <= 5),
+    consumed_at timestamptz,
+    locked_at timestamptz,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (tenant_id, id),
+    FOREIGN KEY (tenant_id, session_id) REFERENCES voice_session(tenant_id, id)
+);
+ALTER TABLE voice_resume_challenge ENABLE ROW LEVEL SECURITY;
+ALTER TABLE voice_resume_challenge FORCE ROW LEVEL SECURITY;
+CREATE POLICY voice_resume_challenge_tenant_isolation ON voice_resume_challenge USING (tenant_id = current_setting('app.tenant_id', true)::uuid) WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
+GRANT SELECT, INSERT, UPDATE ON voice_resume_challenge TO app_role;
 
 CREATE TABLE voice_payment_handoff (
     tenant_id uuid NOT NULL,

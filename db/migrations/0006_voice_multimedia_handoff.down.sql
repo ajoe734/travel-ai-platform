@@ -3,6 +3,7 @@
 -- forward-fix migration instead of deleting the evidence.
 BEGIN;
 DROP TABLE IF EXISTS voice_payment_handoff;
+DROP TABLE IF EXISTS voice_resume_challenge;
 DROP TABLE IF EXISTS asynchronous_media_intake;
 DROP TABLE IF EXISTS voice_transfer;
 DROP TABLE IF EXISTS voice_playback;
