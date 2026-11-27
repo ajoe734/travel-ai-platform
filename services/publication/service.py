@@ -97,7 +97,8 @@ class PublicationService:
         return version_id
 
     def prepare_publications(self, conn: Any, *, tenant_id: str, service_version_id: str,
-                             service_version: int, targets: list[dict[str, str]], connectors: dict[tuple[str, str, str], Any] | None = None) -> tuple[list[DispatchIntent], list[dict[str, Any]]]:
+                             service_version: int, targets: list[dict[str, str]], now: str,
+                             connectors: dict[tuple[str, str, str], Any] | None = None) -> tuple[list[DispatchIntent], list[dict[str, Any]]]:
         """Create one independent durable row per channel.
 
         Missing/disabled access becomes BLOCKED with a merchant-actionable
@@ -133,11 +134,11 @@ class PublicationService:
                 blocked.append(row or publication)
                 continue
             version_row = publications.get_service_version(conn, tenant_id=tenant_id, service_version_id=service_version_id)
-            if version_row is None:
+            if version_row is None or int(version_row["version"]) != int(service_version):
                 raise PublicationError("SERVICE_VERSION_NOT_FOUND")
             try:
                 _assert_approval_integrity(conn, tenant_id=tenant_id, approval_id=version_row["approval_id"],
-                                           now=target.get("now", "9999-01-01T00:00:00Z"), service_id=version_row["service_id"],
+                                           now=now, service_id=version_row["service_id"],
                                            version=service_version, content=version_row["content"], channel=channel, account=account)
             except PublicationError as exc:
                 row = publications.observe_publication(conn, tenant_id=tenant_id, publication_id=publication_id,
