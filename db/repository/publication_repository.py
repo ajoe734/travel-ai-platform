@@ -65,6 +65,24 @@ def get_publication(conn: Any, *, tenant_id: str, publication_id: str) -> dict[s
     row=conn.execute("SELECT "+", ".join(_PUBLICATION_COLUMNS)+" FROM channel_publication WHERE tenant_id=%s AND id=%s",(tenant_id,publication_id)).fetchone()
     return row_as_dict(_PUBLICATION_COLUMNS,row) if row else None
 
+def get_publication_service_version(conn: Any, *, tenant_id: str, publication_id: str) -> dict[str, Any] | None:
+    """Read the immutable version and its approval alongside a publication.
+
+    Dispatch-time authorization must be re-evaluated from persisted state,
+    rather than trusting an intent which may have waited in an outbox.
+    """
+    columns = _PUBLICATION_COLUMNS + ["service_id", "approval_id", "content", "content_hash"]
+    row = conn.execute("""SELECT p.tenant_id, p.id, p.service_version_id, p.channel,
+      p.connector_account_id, p.environment, p.business_key, p.desired_version,
+      p.submitted_version, p.observed_version, p.status, p.external_reference,
+      p.reconciliation_token, p.observed_at, p.failure_reason, p.revision,
+      p.created_at, p.updated_at, sv.service_id, sv.approval_id, sv.content, sv.content_hash
+      FROM channel_publication p
+      JOIN service_version sv ON (sv.tenant_id=p.tenant_id AND sv.id=p.service_version_id
+                                  AND sv.version=p.desired_version)
+      WHERE p.tenant_id=%s AND p.id=%s""", (tenant_id, publication_id)).fetchone()
+    return row_as_dict(columns, row) if row else None
+
 def observe_publication(conn: Any, *, tenant_id: str, publication_id: str, expected_revision: int,
                         status: str, submitted_version: int | None = None, observed_version: int | None = None,
                         external_reference: str | None = None, reconciliation_token: str | None = None,
@@ -76,6 +94,46 @@ def observe_publication(conn: Any, *, tenant_id: str, publication_id: str, expec
       WHERE tenant_id=%s AND id=%s AND revision=%s RETURNING """+", ".join(_PUBLICATION_COLUMNS),
       (status,submitted_version,observed_version,external_reference,reconciliation_token,observed_at,failure_reason,tenant_id,publication_id,expected_revision)).fetchone()
     return row_as_dict(_PUBLICATION_COLUMNS,row) if row else None
+
+def claim_publication_dispatch(conn: Any, *, tenant_id: str, publication_id: str,
+                               expected_revision: int) -> dict[str, Any] | None:
+    """Atomically reserve a NOT_STARTED row before connector I/O.
+
+    ``DISPATCHING`` is deliberately a durable local state: after commit, one
+    worker owns the business key and any crash after an external write is
+    reconciled, never blindly re-sent.
+    """
+    row = conn.execute("""UPDATE channel_publication SET status='DISPATCHING',
+      revision=revision+1 WHERE tenant_id=%s AND id=%s AND revision=%s AND status='NOT_STARTED'
+      RETURNING """ + ", ".join(_PUBLICATION_COLUMNS),
+      (tenant_id, publication_id, expected_revision)).fetchone()
+    return row_as_dict(_PUBLICATION_COLUMNS, row) if row else None
+
+def claim_publication_reconciliation(conn: Any, *, tenant_id: str, publication_id: str,
+                                     expected_revision: int) -> dict[str, Any] | None:
+    """CAS-reserve one PENDING/UNKNOWN readback without changing its meaning."""
+    row = conn.execute("""UPDATE channel_publication SET revision=revision+1
+      WHERE tenant_id=%s AND id=%s AND revision=%s AND status IN ('PENDING','UNKNOWN')
+      RETURNING """ + ", ".join(_PUBLICATION_COLUMNS),
+      (tenant_id, publication_id, expected_revision)).fetchone()
+    return row_as_dict(_PUBLICATION_COLUMNS, row) if row else None
+
+def has_newer_live_publication(conn: Any, *, tenant_id: str, publication_id: str) -> bool:
+    """Whether this target already has a later live service revision."""
+    row = conn.execute("""SELECT 1 FROM channel_publication current_p
+      JOIN service_version current_sv
+        ON (current_sv.tenant_id=current_p.tenant_id AND current_sv.id=current_p.service_version_id)
+      JOIN service_version later_sv
+        ON (later_sv.tenant_id=current_sv.tenant_id AND later_sv.service_id=current_sv.service_id
+            AND later_sv.version > current_sv.version)
+      JOIN channel_publication later_p
+        ON (later_p.tenant_id=later_sv.tenant_id AND later_p.service_version_id=later_sv.id
+            AND later_p.channel=current_p.channel
+            AND later_p.connector_account_id=current_p.connector_account_id
+            AND later_p.environment=current_p.environment AND later_p.status='LIVE')
+      WHERE current_p.tenant_id=%s AND current_p.id=%s LIMIT 1""",
+      (tenant_id, publication_id)).fetchone()
+    return row is not None
 
 def retry_failed_publication(conn: Any, *, tenant_id: str, publication_id: str, expected_revision: int) -> dict[str, Any] | None:
     """Only a FAILED channel is reopened; LIVE/PENDING/UNKNOWN channels are never re-dispatched."""
