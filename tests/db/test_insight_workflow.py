@@ -32,8 +32,12 @@ def test_complaint_asset_cannot_be_marketed_even_by_direct_db_write(conn, tenant
     asset_id = str(uuid.uuid4())
     with repo_db.tenant_transaction(conn, tenant_a):
         InsightService().ingest_asset(conn, tenant_id=tenant_a, asset_id=asset_id, source_scope="COMPLAINT_EVIDENCE", media_kind="IMAGE", source_ref="complaint:evidence", content_hash=_hash("complaint"), metadata={})
-        with pytest.raises(psycopg.Error):
-            conn.execute("UPDATE asset SET lifecycle_status='AVAILABLE' WHERE tenant_id=%s AND id=%s", (tenant_a, asset_id))
+        # A failed statement aborts its transaction in PostgreSQL.  Keep the
+        # fixture row by isolating this expected constraint rejection in a
+        # savepoint, then commit it for the separate admin-role probe below.
+        with conn.transaction():
+            with pytest.raises(psycopg.Error):
+                conn.execute("UPDATE asset SET lifecycle_status='AVAILABLE' WHERE tenant_id=%s AND id=%s", (tenant_a, asset_id))
     with psycopg.connect(admin_database_url, autocommit=True) as admin:
         with pytest.raises(psycopg.Error):
             admin.execute("UPDATE asset SET lifecycle_status='APPROVED' WHERE tenant_id=%s AND id=%s", (tenant_a, asset_id))
