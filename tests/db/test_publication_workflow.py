@@ -19,7 +19,8 @@ from services.authorization import canonical_json
 from services.publication.service import PublicationError, PublicationService
 
 
-def _approval(conn, tenant_id, work_id, service_id, version, content, targets=None, *, expires_at=None, scope_tenant_id=None):
+def _approval(conn, tenant_id, work_id, service_id, version, content, targets=None, *, base_version=None,
+              expires_at=None, scope_tenant_id=None):
     now = datetime.now(timezone.utc)
     decision_id, approval_id = str(uuid.uuid4()), str(uuid.uuid4())
     with repo_db.tenant_transaction(conn, tenant_id):
@@ -30,6 +31,8 @@ def _approval(conn, tenant_id, work_id, service_id, version, content, targets=No
             expires_at=(now + timedelta(hours=1)).isoformat(), requested_role="MERCHANT_ADMIN",
         )
         payload = {"purpose": "publish service", "service_id": service_id, "version": version, "content": content}
+        if base_version is not None:
+            payload["base_version"] = base_version
         approval_repository.approve_decision(
             conn, tenant_id=tenant_id, decision_id=decision_id, reviewed_revision=1,
             selected_option_id="approve", approval_id=approval_id,
@@ -51,7 +54,7 @@ def test_approved_version_is_immutable_and_keeps_old_order_untouched(conn, admin
     service_id, version_id = str(uuid.uuid4()), str(uuid.uuid4())
     order = payment_chain_factory(tenant_a, case_id, captured_amount=1000)
     content = {"title": "new title", "price": "1000"}
-    approval_id, now = _approval(conn, tenant_a, work_id, service_id, 2, content)
+    approval_id, now = _approval(conn, tenant_a, work_id, service_id, 2, content, base_version=1)
     with repo_db.tenant_transaction(conn, tenant_a):
         PublicationService().create_approved_version(conn, tenant_id=tenant_a, service_id=service_id, version=2,
             content=content, approval_id=approval_id, now=now,
@@ -72,13 +75,15 @@ def test_multi_channel_partial_publication_retry_and_summary(conn, tenant_a, cas
     work_id = work_factory(tenant_a, case_id)
     service_id, version_id = str(uuid.uuid4()), str(uuid.uuid4())
     content = {"title": "v2"}
+    # This is the full production boundary regression: approval binds base v1;
+    # create -> prepare -> claim must all preserve that value during rechecks.
     approval_id, now = _approval(conn, tenant_a, work_id, service_id, 2, content,
-        targets=[("website", "web"), ("ota-1", "ota-a"), ("ota-2", "ota-b")])
+        targets=[("website", "web"), ("ota-1", "ota-a"), ("ota-2", "ota-b")], base_version=1)
     svc, ota = PublicationService(), OtaDelayedPublicationMock()
     pms = PmsNightlyMock({})
     with repo_db.tenant_transaction(conn, tenant_a):
         svc.create_approved_version(conn, tenant_id=tenant_a, service_id=service_id, version=2, content=content,
-            approval_id=approval_id, now=now, version_id=version_id)
+            approval_id=approval_id, now=now, version_id=version_id, base_version=1)
         for channel, account in (("website", "web"), ("ota-1", "ota-a"), ("ota-2", "ota-b"), ("pms", "pms")):
             publication_repository.set_channel_access(conn, tenant_id=tenant_a, channel=channel, connector_account_id=account, environment="MOCK", publication_enabled=True, reason=None)
         intents, blocked = svc.prepare_publications(conn, tenant_id=tenant_a, service_version_id=version_id, service_version=2,

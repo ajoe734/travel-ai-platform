@@ -71,12 +71,12 @@ def get_publication_service_version(conn: Any, *, tenant_id: str, publication_id
     Dispatch-time authorization must be re-evaluated from persisted state,
     rather than trusting an intent which may have waited in an outbox.
     """
-    columns = _PUBLICATION_COLUMNS + ["service_id", "approval_id", "content", "content_hash"]
+    columns = _PUBLICATION_COLUMNS + ["service_id", "base_version", "approval_id", "content", "content_hash"]
     row = conn.execute("""SELECT p.tenant_id, p.id, p.service_version_id, p.channel,
       p.connector_account_id, p.environment, p.business_key, p.desired_version,
       p.submitted_version, p.observed_version, p.status, p.external_reference,
       p.reconciliation_token, p.observed_at, p.failure_reason, p.revision,
-      p.created_at, p.updated_at, sv.service_id, sv.approval_id, sv.content, sv.content_hash
+      p.created_at, p.updated_at, sv.service_id, sv.base_version, sv.approval_id, sv.content, sv.content_hash
       FROM channel_publication p
       JOIN service_version sv ON (sv.tenant_id=p.tenant_id AND sv.id=p.service_version_id
                                   AND sv.version=p.desired_version)

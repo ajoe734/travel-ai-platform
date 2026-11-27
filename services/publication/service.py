@@ -82,7 +82,11 @@ def _assert_approval_integrity(conn: Any, *, tenant_id: str, approval_id: str, n
         content_matches = False
     if (str(payload.get("service_id")) != str(service_id) or str(payload.get("version")) != str(version)
             or not content_matches
-            or ("base_version" in payload and payload["base_version"] != base_version)):
+            # Python considers ``True == 1``.  Base revisions are part of the
+            # approved command payload, so retain canonical JSON's type-aware
+            # comparison instead of accepting that coercion.
+            or ("base_version" in payload and canonical_json.payload_hash(payload["base_version"])
+                != canonical_json.payload_hash(base_version))):
         raise PublicationError("APPROVAL_CONTENT_MISMATCH")
     if not any(_scope_matches(item, tenant_id=tenant_id, service_id=service_id, version=version,
                               now=now, channel=channel, account=account) for item in approval["scope_manifest"]):
@@ -151,7 +155,8 @@ class PublicationService:
             try:
                 _assert_approval_integrity(conn, tenant_id=tenant_id, approval_id=version_row["approval_id"],
                                            now=now, service_id=version_row["service_id"],
-                                           version=service_version, content=version_row["content"], channel=channel, account=account)
+                                           version=service_version, content=version_row["content"],
+                                           base_version=version_row["base_version"], channel=channel, account=account)
             except PublicationError as exc:
                 row = publications.observe_publication(conn, tenant_id=tenant_id, publication_id=publication_id,
                     expected_revision=publication["revision"], status="BLOCKED", failure_reason=str(exc))
@@ -169,7 +174,8 @@ class PublicationService:
         try:
             _assert_approval_integrity(conn, tenant_id=tenant_id, approval_id=current["approval_id"], now=now,
                                        service_id=current["service_id"], version=current["desired_version"], content=current["content"],
-                                       channel=current["channel"], account=current["connector_account_id"])
+                                       base_version=current["base_version"], channel=current["channel"],
+                                       account=current["connector_account_id"])
             access = publications.get_channel_access(conn, tenant_id=tenant_id, channel=current["channel"],
                                                      connector_account_id=current["connector_account_id"], environment=current["environment"])
             if access is None or not access["publication_enabled"]:

@@ -181,6 +181,14 @@ class ApprovalIntegrityRegressionTest(unittest.TestCase):
         with self.assertRaisesRegex(PublicationError, "APPROVAL_CONTENT_MISMATCH"):
             self._assert_with(approval, {"price": "1000"}, base_version=0)
 
+    def test_boolean_is_not_accepted_for_approved_integer_base_version(self):
+        approval = self._approval(content={"price": "1000"}, scope={
+            "operation": "publication.update", "resource_ref": {"tenant_id": "tenant", "id": "service"},
+            "resource_revision": 2, "channel": "ota", "account": "account",
+        }, base_version_marker=1)
+        with self.assertRaisesRegex(PublicationError, "APPROVAL_CONTENT_MISMATCH"):
+            self._assert_with(approval, {"price": "1000"}, base_version=True)
+
 
 _UNSET = object()
 
@@ -214,7 +222,8 @@ class PublicationPreparationTest(unittest.TestCase):
             "services.publication.service.publications.observe_publication", side_effect=observe
         ), patch("services.publication.service._assert_approval_integrity"), patch(
             "services.publication.service.publications.get_service_version",
-            return_value={"approval_id": "approval", "service_id": "service", "version": 2, "content": {"title": "v2"}},
+            return_value={"approval_id": "approval", "service_id": "service", "version": 2,
+                          "base_version": None, "content": {"title": "v2"}},
         ):
             intents, blocked = svc.prepare_publications(
                 None,
@@ -242,7 +251,8 @@ class PublicationPreparationTest(unittest.TestCase):
             "services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw
         ), patch("services.publication.service._assert_approval_integrity"), patch(
             "services.publication.service.publications.get_service_version",
-            return_value={"approval_id": "approval", "service_id": "service", "version": 2, "content": {"title": "v2"}},
+            return_value={"approval_id": "approval", "service_id": "service", "version": 2,
+                          "base_version": None, "content": {"title": "v2"}},
         ):
             intents, blocked = PublicationService().prepare_publications(None, tenant_id="t", service_version_id="v", service_version=2,
                 targets=[{"channel": "pms", "connector_account_id": "pms", "environment": "MOCK"}],
