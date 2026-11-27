@@ -106,7 +106,7 @@ def record_inbound_event(
             INSERT INTO inbox_event_conflict (tenant_id, id, inbox_event_id, conflicting_hash, conflicting_payload)
             VALUES (%s, %s, %s, %s, %s)
             """,
-            (tenant_id, event_id, row["id"], raw_hash, json.dumps(raw_payload)),
+            (tenant_id, event_id, row["id"], raw_hash, json.dumps(raw_payload, default=str)),
         )
         conn.execute(
             "UPDATE inbox_event SET processing_status = 'QUARANTINED' WHERE tenant_id = %s AND id = %s",
@@ -122,7 +122,7 @@ def record_inbound_event(
         RETURNING tenant_id, id, connector_account_id, environment, producer, source_event_id,
                   raw_hash, raw_payload, received_at, processing_status, processed_at
         """,
-        (tenant_id, event_id, connector_account_id, environment, producer, source_event_id, raw_hash, json.dumps(raw_payload)),
+        (tenant_id, event_id, connector_account_id, environment, producer, source_event_id, raw_hash, json.dumps(raw_payload, default=str)),
     ).fetchone()
     return InboxOutcome(InboxOutcome.CREATED, dict(zip(_INBOX_COLUMNS, row)))
 

@@ -40,7 +40,8 @@ from connectors.types import Failed, OperationResult, Succeeded
 
 from db.repository import approval_repository, execution_repository, fulfillment_repository, outbox_inbox_repository, work_repository
 from db.repository.errors import VersionConflict
-from services.authorization.temporal import parse_timestamp
+from services.authorization import canonical_json
+from services.authorization.temporal import is_at_or_before, parse_timestamp
 
 from .errors import (
     DecisionOptionUnknownError,
@@ -170,13 +171,7 @@ class FulfillmentService:
             "total_amount_minor_units": total_amount_minor_units,
             "currency": currency,
         }
-        payload_hash = _hash_snapshot(display_payload)
-        # Use the connector-idempotency hash form (plain sha256 over sorted
-        # JSON) rather than services.authorization.canonical_json's approval
-        # hash (which adds a fixed "travel-approval-v1\n" prefix meant for
-        # that service's own cross-language test vectors) -- this candidate
-        # does not promise cross-language canonicalization for this payload,
-        # only the 64-hex-char shape decision_request.payload_hash requires.
+        payload_hash = canonical_json.payload_hash(display_payload)
         approval_repository.create_decision_request(
             conn, tenant_id=tenant_id, decision_id=decision_id, revision=1, work_id=work_id,
             decision_type="BOOKING_QUOTE_APPROVAL",
@@ -228,17 +223,30 @@ class FulfillmentService:
         decision = approval_repository.get_decision_request(conn, tenant_id=tenant_id, decision_id=decision_id)
         if decision is None:
             raise TaskNotFoundError(f"no decision {decision_id}")
+        if str(decision["work_id"]) != work_id:
+            raise WorkPhaseMismatchError("decision does not belong to this Work")
+        if decision["status"] != "PENDING" or decision["revision"] != expected_revision:
+            raise WorkPhaseMismatchError("decision is no longer the requested pending revision")
+        if is_at_or_before(str(decision["expires_at"]), approved_at):
+            raise WorkPhaseMismatchError("decision has expired")
+        if approved_by.get("actor_kind") != decision["requested_role"]:
+            raise WorkPhaseMismatchError("approval actor does not hold the requested role")
         option_ids = {option["option_id"] for option in decision["options"]}
         if selected_option_id not in option_ids:
             raise DecisionOptionUnknownError(f"{selected_option_id!r} is not one of {sorted(option_ids)}")
 
         if selected_option_id == "approve":
+            expected_manifest = {"booking": "booking.create"}
+            actual_manifest = {item.get("item_id"): item.get("operation") for item in scope_manifest}
+            if actual_manifest != expected_manifest:
+                raise WorkPhaseMismatchError("approval scope_manifest does not exactly bind booking.create")
             approval_id = _new_id()
             approval_repository.approve_decision(
                 conn, tenant_id=tenant_id, decision_id=decision_id, reviewed_revision=expected_revision,
                 selected_option_id=selected_option_id, approval_id=approval_id, approved_by=approved_by,
                 verified_actor_ref=verified_actor_ref, approved_payload=decision["display_payload"],
                 payload_hash=decision["payload_hash"], scope_manifest=scope_manifest, approved_at=approved_at,
+                expires_at=str(decision["expires_at"]),
             )
             payload = decision["display_payload"]
             task_id = _new_id()
@@ -248,6 +256,8 @@ class FulfillmentService:
                 "party_size": payload["party_size"],
                 "order_id": payload["order_id"],
                 "quote_id": payload["quote_id"],
+                "approval_id": approval_id,
+                "decision_id": decision_id,
             }
             task = execution_repository.create_execution_task(
                 conn, tenant_id=tenant_id, task_id=task_id, work_id=work_id, kind="ACTION",
@@ -306,33 +316,27 @@ class FulfillmentService:
                 "attempt, reconcile_booking handles WAITING/UNKNOWN"
             )
 
-        lease = execution_repository.acquire_lease(
+        self._assert_dispatch_approval(conn, tenant_id=tenant_id, task=task, now=now)
+
+        # This is the dispatch-intent transition.  It races cancellation as
+        # one SQL predicate; only its winner can create an attempt or call the
+        # connector (SD-W-11).
+        task = execution_repository.claim_new_task_for_dispatch(
             conn, tenant_id=tenant_id, task_id=task_id, holder=holder, now=now,
             lease_until=_add_seconds(now, lease_seconds),
         )
-        if lease is None:
-            raise TaskLeaseContendedError(f"execution_task {task_id} lease is held by another worker")
-        fence = lease["lease_fence_token"]
-
+        if task is None:
+            current = execution_repository.get_execution_task(conn, tenant_id=tenant_id, task_id=task_id)
+            if current is not None and current["status"] == "CANCELLED":
+                return {"task": current, "outcome": "CANCELLED_BEFORE_DISPATCH"}
+            raise TaskLeaseContendedError(f"execution_task {task_id} was claimed or changed by another worker")
+        fence = task["lease_fence_token"]
         attempt_id = _new_id()
         execution_repository.record_attempt(
             conn, tenant_id=tenant_id, attempt_id=attempt_id, task_id=task_id,
             attempt_no=execution_repository.next_attempt_no(conn, tenant_id=tenant_id, task_id=task_id),
             attempt_kind="DISPATCH", fence_token=fence, request_hash=task["request_hash"], started_at=now,
         )
-
-        try:
-            task = execution_repository.update_task_status(
-                conn, tenant_id=tenant_id, task_id=task_id, expected_revision=task["revision"],
-                new_status="EXECUTING", fence_token=fence,
-            )
-        except VersionConflict:
-            # Lost the race to a concurrent cancel_booking that committed
-            # its NEW -> CANCELLED transition first (SD-W-11): the external
-            # call must never be made for a task that has just been cancelled.
-            execution_repository.release_lease(conn, tenant_id=tenant_id, task_id=task_id, fence_token=fence)
-            current = execution_repository.get_execution_task(conn, tenant_id=tenant_id, task_id=task_id)
-            return {"task": current, "outcome": "CANCELLED_BEFORE_DISPATCH"}
 
         snapshot = task["request_snapshot"]
         if simulate_timeout:
@@ -512,6 +516,16 @@ class FulfillmentService:
                 "task_status": task["status"] if task else None,
             }
 
+        lease = execution_repository.acquire_lease(
+            conn, tenant_id=tenant_id, task_id=task_id, holder=f"webhook:{producer}", now=now,
+            lease_until=_add_seconds(now, 30),
+        )
+        if lease is None:
+            # Leave the inbox RECEIVED: a scheduler can safely replay it once
+            # the holder finishes, rather than applying under a stale fence.
+            return {"inbox_outcome": inbox_result.outcome, "applied": False, "task_status": task["status"]}
+        task = lease
+
         attempt_id = _new_id()
         execution_repository.record_attempt(
             conn, tenant_id=tenant_id, attempt_id=attempt_id, task_id=task_id,
@@ -542,9 +556,11 @@ class FulfillmentService:
             )
             response = {"task": task2, "work": work2, "outcome": "FAILED"}
         else:
+            execution_repository.release_lease(conn, tenant_id=tenant_id, task_id=task_id, fence_token=task["lease_fence_token"])
             raise ValueError(f"unknown webhook outcome {outcome!r}")
 
         outbox_inbox_repository.mark_inbox_processed(conn, tenant_id=tenant_id, event_id=event_id, processed_at=now)
+        execution_repository.release_lease(conn, tenant_id=tenant_id, task_id=task_id, fence_token=task["lease_fence_token"])
         return {"inbox_outcome": inbox_result.outcome, "applied": True, **response}
 
     # -- 8. Notification: its own task, failure never reopens the booking ----
@@ -565,16 +581,25 @@ class FulfillmentService:
             request_snapshot=snapshot, postcondition_version="notification-v1",
             postcondition={"delivered_or_accepted": True},
         )
+        if task["status"] == "DONE":
+            return task
+        if task["status"] not in ("NEW", "FAILED"):
+            raise TaskLeaseContendedError(f"notification task {task['id']} is {task['status']}")
         lease = execution_repository.acquire_lease(
             conn, tenant_id=tenant_id, task_id=task["id"], holder=holder, now=now, lease_until=_add_seconds(now, 30),
         )
         if lease is None:
             raise TaskLeaseContendedError(f"notification task {task['id']} lease is held by another worker")
         fence = lease["lease_fence_token"]
+        task = execution_repository.update_task_status(
+            conn, tenant_id=tenant_id, task_id=task["id"], expected_revision=task["revision"],
+            new_status="EXECUTING", fence_token=fence,
+        )
 
         attempt_id = _new_id()
         execution_repository.record_attempt(
-            conn, tenant_id=tenant_id, attempt_id=attempt_id, task_id=task["id"], attempt_no=1,
+            conn, tenant_id=tenant_id, attempt_id=attempt_id, task_id=task["id"],
+            attempt_no=execution_repository.next_attempt_no(conn, tenant_id=tenant_id, task_id=task["id"]),
             attempt_kind="DISPATCH", fence_token=fence, request_hash=task["request_hash"], started_at=now,
         )
         delivered = notifier()
@@ -605,6 +630,22 @@ class FulfillmentService:
         return task
 
     # -- internals -------------------------------------------------------
+
+    def _assert_dispatch_approval(self, conn, *, tenant_id: str, task: dict[str, Any], now: str) -> None:
+        """Recheck the immutable decision/approval projection immediately
+        before dispatch.  A UI flag or stale approval cannot authorize I/O.
+        """
+        approval_id = task["request_snapshot"].get("approval_id")
+        if not approval_id or not approval_repository.approval_is_effective(
+            conn, tenant_id=tenant_id, approval_id=str(approval_id), now=now
+        ):
+            raise WorkPhaseMismatchError("booking approval is expired, revoked, or unavailable")
+        approval = approval_repository.get_approval_record(conn, tenant_id=tenant_id, approval_id=str(approval_id))
+        if approval is None or approval["payload_hash"] != canonical_json.payload_hash(approval["approved_payload"]):
+            raise WorkPhaseMismatchError("booking approval payload integrity check failed")
+        manifest = {item.get("item_id"): item.get("operation") for item in approval["scope_manifest"]}
+        if manifest != {"booking": "booking.create"}:
+            raise WorkPhaseMismatchError("booking approval scope no longer matches the task")
 
     def _apply_dispatch_result(
         self, conn, *, tenant_id: str, work_id: str, task: dict[str, Any], attempt_id: str,

@@ -25,7 +25,11 @@ from .types import OperationResult
 def request_hash(payload: dict) -> str:
     """64 lowercase-hex chars, matching specs/domain's request_hash pattern
     (execution-task.schema.json, execution-attempt.schema.json)."""
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    # DB drivers return UUID values for uuid columns.  Callers use this hash
+    # for durable snapshots and inbox payloads, so accepting those values here
+    # is part of the repository/connector boundary rather than leaving each
+    # worker to remember an ad-hoc conversion.
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

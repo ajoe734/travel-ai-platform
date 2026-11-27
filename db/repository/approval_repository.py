@@ -9,11 +9,20 @@ from typing import Any
 import psycopg
 
 from .errors import VersionConflict
+from services.authorization import canonical_json
+from services.authorization.temporal import is_at_or_before
 
 _DECISION_COLUMNS = [
     "tenant_id", "id", "revision", "work_id", "decision_type", "status", "context_refs",
     "options", "selected_option_id", "impact_summary", "display_payload", "payload_hash",
     "canonicalization_version", "target_revision", "expires_at", "requested_role", "created_at",
+]
+
+_APPROVAL_COLUMNS = [
+    "tenant_id", "id", "decision_id", "reviewed_revision", "approved_by",
+    "verified_actor_ref", "approved_payload", "policy_version",
+    "canonicalization_version", "payload_hash", "scope_manifest", "approved_at",
+    "expires_at", "confirmation_evidence", "created_at",
 ]
 
 
@@ -58,6 +67,10 @@ def create_decision_request(
     requested_role: str,
     display_payload: dict[str, Any] | None = None,
 ) -> None:
+    if display_payload is not None:
+        computed_hash = canonical_json.payload_hash(display_payload)
+        if payload_hash != computed_hash:
+            raise ValueError("decision_request payload_hash must use travel-approval-v1 canonical hashing")
     conn.execute(
         """
         INSERT INTO decision_request
@@ -110,7 +123,6 @@ def approve_decision(
         raise VersionConflict(
             f"decision {decision_id!r} revision {reviewed_revision} is not PENDING (stale or already resolved)"
         )
-
     conn.execute(
         """
         INSERT INTO approval_record
@@ -126,6 +138,33 @@ def approve_decision(
         ),
     )
 
+
+def get_approval_record(conn: psycopg.Connection, *, tenant_id: str, approval_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        f"SELECT {', '.join(_APPROVAL_COLUMNS)} FROM approval_record WHERE tenant_id = %s AND id = %s",
+        (tenant_id, approval_id),
+    ).fetchone()
+    return dict(zip(_APPROVAL_COLUMNS, row)) if row is not None else None
+
+
+def approval_is_effective(
+    conn: psycopg.Connection, *, tenant_id: str, approval_id: str, now: str
+) -> bool:
+    """Return the validity projection without ever mutating immutable approval data."""
+    approval = get_approval_record(conn, tenant_id=tenant_id, approval_id=approval_id)
+    if approval is None:
+        return False
+    if approval["expires_at"] is not None and is_at_or_before(str(approval["expires_at"]), now):
+        return False
+    revoked = conn.execute(
+        """
+        SELECT 1 FROM approval_revocation
+        WHERE tenant_id = %s AND approval_id = %s AND effective_at <= %s
+        LIMIT 1
+        """,
+        (tenant_id, approval_id, now),
+    ).fetchone()
+    return revoked is None
 
 def reject_decision(
     conn: psycopg.Connection,

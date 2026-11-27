@@ -23,6 +23,16 @@
 | 未取得外部證據不得顯示完成 | `services/fulfillment/service.py` `_complete_booking` 一律先 `work_repository.create_completion_evidence` 寫入不可變 `completion_evidence` 列，取得其 `id` 後才呼叫 `update_work_status(new_status="COMPLETED", completion_record={"evidence_refs": [...]})`；DB 層另有 `db/migrations/0002` 的 `work_completion_record_matches_status` CHECK 做第二層保證 | `test_normal_completion_has_real_completion_evidence`（直接查 `completion_evidence` 表確認至少一列） | 同上 | 只驗證「本流程唯一的完成路徑確實先寫證據」；沒有另外測試「繞過 service 直接對 DB 下指令可否偽造完成」，那屬 DB CHECK 約束本身的職責（已在 0002 migration 存在，非本輪新增） |
 | 通知失敗與預訂失敗分開 | `services/fulfillment/service.py` `send_notification` 是獨立 `ExecutionTask`（`operation=notification.send`），失敗只建立該 task 自己的 `Escalation`，完全不呼叫 `work_repository.update_work_status`——已 `COMPLETED` 的 Work 不受影響（SD-W-09） | `test_notification_failure_is_separate_from_booking_success` | 同上 | 只驗證「通知失敗不影響已成功的預訂」；通知重送的實際排程（誰在什麼時候重送）本輪未實作，只建立 Escalation 標記待處理 |
 
+## R1 退修紀錄（candidate `a3e44e2` → owner branch `e9776de`）
+
+| Finding／驗收項 | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
+| --- | --- | --- | --- | --- |
+| F1 UUID JSON 序列化 | `connectors/idempotency.py:request_hash`、`db/repository/outbox_inbox_repository.py` | 舊 hosted CI 的 webhook／notification 以 psycopg `UUID` 呼叫 `json.dumps` 會 `TypeError`；hash 與 inbox JSON 現統一以 `default=str` 正規化 | `python3 -m py_compile ...` exit 0；需 hosted PostgreSQL 重跑原兩案例 | 尚未讀到新 hosted run |
+| F3 取消 vs dispatch | `execution_repository.claim_new_task_for_dispatch`、`FulfillmentService.dispatch_booking` | 舊版先取得 lease、寫 attempt 後才 revision lock；現以 `status='NEW'` 單一條件 UPDATE 取得 lease、轉 `EXECUTING`，失去競態時不寫 attempt、不呼叫 connector | `python3 -m py_compile ...` exit 0；`test_cancel_vs_dispatch_race_has_exactly_one_deterministic_winner` 需 hosted PostgreSQL | 要在 hosted run 確認 cancel winner 的 attempt count=0 |
+| F4 hash／同意範圍／撤回 | `accept_order`、`approve_consent`、`_assert_dispatch_approval`、`approval_repository` | 舊版使用無 prefix hash、沒有 `work_id`／角色／scope／expiry 檢查；現採 `canonical_json.payload_hash`，核對 decision 綁定與 scope，發出前重新核對 approval expiry/revocation | `python3 -m py_compile ...` exit 0 | 尚缺實際 DB 負向案例與 hosted 結果 |
+| F5 webhook fence、通知重試 | `process_booking_webhook`、`send_notification` | 舊版 webhook 使用舊 fence，通知固定 attempt=1 且 DONE 會重送；現 webhook 套用前取得 lease/fence，通知 DONE no-op、retry 使用 next attempt number | `python3 -m py_compile ...` exit 0 | 尚缺 applied=True、same source ID different payload、notification retry 的 DB 例 |
+| F2 外部 I/O transaction boundary | `dispatch_booking`、`reconcile_booking` | 已精確定位：現有 public API 仍由 caller 傳入 tenant transaction，外部 connector call 尚未移出 transaction；不能把其他修復視為此項已消除 | 靜態讀碼（`service.py` dispatch/reconcile connector call） | **未解**；下一修復單元需將 intent / external I/O / outcome 分為不同短交易並補 crash-after-success restart 回歸 |
+
 ## 本機靜態驗證（已實跑，非假設）
 
 ```text

@@ -234,6 +234,37 @@ def acquire_lease(
     return dict(zip(_LEASE_COLUMNS, row))
 
 
+def claim_new_task_for_dispatch(
+    conn: psycopg.Connection,
+    *,
+    tenant_id: str,
+    task_id: str,
+    holder: str,
+    now: str,
+    lease_until: str,
+) -> dict[str, Any] | None:
+    """Atomically turn a still-NEW task into EXECUTING and obtain its fence.
+
+    This is deliberately one conditional write: cancellation and dispatch
+    race on the same ``status='NEW'`` predicate, so a cancelled task cannot
+    acquire a lease or receive a durable DISPATCH attempt afterwards.
+    """
+    row = conn.execute(
+        f"""
+        UPDATE execution_task
+        SET status = 'EXECUTING', revision = revision + 1,
+            lease_holder = %s,
+            lease_fence_token = COALESCE(lease_fence_token, 0) + 1,
+            lease_until = %s
+        WHERE tenant_id = %s AND id = %s AND status = 'NEW'
+          AND (lease_until IS NULL OR lease_until <= %s)
+        RETURNING {", ".join(_LEASE_COLUMNS)}
+        """,
+        (holder, lease_until, tenant_id, task_id, now),
+    ).fetchone()
+    return dict(zip(_LEASE_COLUMNS, row)) if row is not None else None
+
+
 def release_lease(conn: psycopg.Connection, *, tenant_id: str, task_id: str, fence_token: int) -> None:
     """Release a lease this holder still owns. A no-op (zero rows) if the
     fence has already moved on -- an expired holder releasing late must never
