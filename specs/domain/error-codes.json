@@ -73,6 +73,14 @@
       "x_added_by": "ENG-07"
     },
     {
+      "code": "REFUND_ROUTE_MISMATCH",
+      "http_status": 422,
+      "retryable_default": false,
+      "meaning": "退款送出帳號、環境或幣別與原付款收款主體不一致；不得改用平台帳號代退。",
+      "source": "SA BR-16; SD credit-and-refund.md §2/SD-M-05",
+      "x_added_by": "ENG-07"
+    },
+    {
       "code": "UPSTREAM_RESULT_UNKNOWN",
       "http_status": 202,
       "retryable_default": false,

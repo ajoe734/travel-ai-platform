@@ -66,6 +66,12 @@ CREATE POLICY remedy_action_tenant_isolation ON remedy_action
     WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 GRANT SELECT, INSERT, UPDATE ON remedy_action TO app_role;
 
+-- The ENG-02 refund row remains the reservation/counter source of truth; this
+-- optional link supplies ENG-07's selected, approved remedy provenance.
+ALTER TABLE refund ADD COLUMN remedy_action_id uuid;
+ALTER TABLE refund ADD CONSTRAINT refund_remedy_action_fkey
+    FOREIGN KEY (tenant_id, remedy_action_id) REFERENCES remedy_action(tenant_id, id);
+
 CREATE TABLE credit_account (
     tenant_id uuid NOT NULL,
     id uuid NOT NULL,

@@ -18,7 +18,7 @@ from typing import Any
 
 import psycopg
 
-from .errors import IdempotencyConflict, InsufficientRefundBalance
+from .errors import IdempotencyConflict, InsufficientRefundBalance, RefundRouteMismatch
 from .rows import row_as_dict
 
 _REFUND_COLUMNS = [
@@ -178,4 +178,53 @@ def release_refund_reservation(
         WHERE tenant_id = %s AND id = %s
         """,
         (amount_minor_units, tenant_id, payment_id),
+    )
+
+
+def submit_refund_to_original_collector(
+    conn: psycopg.Connection,
+    *,
+    tenant_id: str,
+    refund_id: str,
+    collector_account: str,
+    connector_account_id: str,
+    environment: str,
+) -> None:
+    """Fence a RESERVED refund to its captured payment's original route.
+
+    A caller cannot use a platform/default account to refund an order collected
+    by a channel.  The provider adapter is called only after this transaction
+    commits; its result must then go through ``mark_refund_succeeded`` or the
+    explicit PENDING/UNKNOWN transition below.
+    """
+    row = conn.execute(
+        """UPDATE refund AS r
+             SET state = 'SUBMITTED', connector_account_id = %s, environment = %s
+             FROM payment AS p
+             WHERE r.tenant_id = %s AND r.id = %s AND r.state = 'RESERVED'
+               AND p.tenant_id = r.tenant_id AND p.id = r.payment_id
+               AND p.collector_account = %s AND p.environment = %s AND p.currency = r.currency
+             RETURNING r.id""",
+        (connector_account_id, environment, tenant_id, refund_id, collector_account, environment),
+    ).fetchone()
+    if row is not None:
+        return
+    existing = conn.execute(
+        "SELECT state FROM refund WHERE tenant_id = %s AND id = %s", (tenant_id, refund_id)
+    ).fetchone()
+    if existing is not None and existing[0] == "SUBMITTED":
+        return
+    raise RefundRouteMismatch("refund route must match the captured payment collector, environment and currency")
+
+
+def mark_refund_awaiting_reconciliation(
+    conn: psycopg.Connection, *, tenant_id: str, refund_id: str, state: str, evidence: dict[str, Any]
+) -> None:
+    """Record known PENDING separately from UNKNOWN; neither releases funds."""
+    if state not in ("PENDING", "UNKNOWN"):
+        raise ValueError("refund reconciliation state must be PENDING or UNKNOWN")
+    conn.execute(
+        """UPDATE refund SET state = %s, evidence = %s
+             WHERE tenant_id = %s AND id = %s AND state IN ('SUBMITTED', 'PENDING', 'UNKNOWN')""",
+        (state, json.dumps(evidence), tenant_id, refund_id),
     )

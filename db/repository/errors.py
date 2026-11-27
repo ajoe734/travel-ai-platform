@@ -36,6 +36,10 @@ class CreditTermsRequired(RepositoryError):
     code = "CREDIT_TERMS_REQUIRED"
 
 
+class RefundRouteMismatch(RepositoryError):
+    code = "REFUND_ROUTE_MISMATCH"
+
+
 class CrossTenantReferenceRejected(RepositoryError):
     code = "CROSS_TENANT_REFERENCE_REJECTED"
 

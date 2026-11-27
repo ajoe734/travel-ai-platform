@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import uuid
 
 import pytest
 
-from db.repository import credit_repository, db as repo_db, remedy_repository
-from db.repository.errors import InsufficientCreditBalance
+from db.repository import credit_repository, db as repo_db, refund_repository, remedy_repository
+from db.repository.errors import InsufficientCreditBalance, RefundRouteMismatch
 
 
 def _account(conn, tenant_id: str, *, currency: str = "TWD") -> str:
@@ -104,6 +105,45 @@ def test_credit_reservation_prevents_overuse_and_consumes_only_once(
     assert reversal_count == 1
 
 
+def _reserve_credit_in_thread(database_url, tenant_id, account_id, grant_id, order_id, key, barrier, results, index):
+    connection = repo_db.connect(database_url)
+    try:
+        barrier.wait()
+        with repo_db.tenant_transaction(connection, tenant_id):
+            credit_repository.reserve_credit_usage(
+                connection, tenant_id=tenant_id, reservation_id=str(uuid.uuid4()), account_id=account_id,
+                grant_id=grant_id, order_id=order_id, operation_key=key, amount_minor_units=60, currency="TWD",
+            )
+        results[index] = "ok"
+    except InsufficientCreditBalance:
+        results[index] = "insufficient"
+    finally:
+        connection.close()
+
+
+def test_concurrent_credit_reservations_cannot_overspend_grant(
+    app_database_url, conn, tenant_a, case_factory, payment_chain_factory
+):
+    account_id = _account(conn, tenant_a)
+    grant = _grant(conn, tenant_a, account_id, amount=100, key="concurrent-grant")
+    case_id = case_factory(tenant_a)
+    order_id = payment_chain_factory(tenant_a, case_id, 100)["order_id"]
+    barrier = threading.Barrier(2)
+    results = [None, None]
+    threads = [
+        threading.Thread(
+            target=_reserve_credit_in_thread,
+            args=(app_database_url, tenant_a, account_id, grant["id"], order_id, f"concurrent-redeem-{i}", barrier, results, i),
+        )
+        for i in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert set(results) == {"ok", "insufficient"}
+
+
 def test_notification_failure_does_not_close_complaint(
     conn, tenant_a, case_factory, work_factory, payment_chain_factory
 ):
@@ -157,3 +197,32 @@ def test_notification_failure_does_not_close_complaint(
         ).fetchone()
     assert resolved[0] == "RESOLVED"
     assert resolved[1]["customer_responded"] is False
+
+
+def test_refund_can_only_be_submitted_to_original_payment_route(
+    conn, tenant_a, case_factory, payment_chain_factory
+):
+    case_id = case_factory(tenant_a)
+    chain = payment_chain_factory(tenant_a, case_id, 100)
+    refund_id = str(uuid.uuid4())
+    with repo_db.tenant_transaction(conn, tenant_a):
+        refund_repository.reserve_refund(
+            conn, tenant_id=tenant_a, payment_id=chain["payment_id"], refund_id=refund_id,
+            business_key="refund-original-route", amount_minor_units=50, currency="TWD",
+            currency_scale_ref="iso4217-minor-unit-2",
+        )
+    with pytest.raises(RefundRouteMismatch):
+        with repo_db.tenant_transaction(conn, tenant_a):
+            refund_repository.submit_refund_to_original_collector(
+                conn, tenant_id=tenant_a, refund_id=refund_id, collector_account="platform-default",
+                connector_account_id=str(uuid.uuid4()), environment="MOCK",
+            )
+    with repo_db.tenant_transaction(conn, tenant_a):
+        refund_repository.submit_refund_to_original_collector(
+            conn, tenant_id=tenant_a, refund_id=refund_id, collector_account="mock-collector",
+            connector_account_id=str(uuid.uuid4()), environment="MOCK",
+        )
+        state = conn.execute(
+            "SELECT state FROM refund WHERE tenant_id = %s AND id = %s", (tenant_a, refund_id)
+        ).fetchone()[0]
+    assert state == "SUBMITTED"
