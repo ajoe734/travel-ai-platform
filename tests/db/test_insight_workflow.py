@@ -44,7 +44,7 @@ def test_asset_rights_expiry_blocks_proposal_service_content(conn, tenant_a, cas
     work_id = work_factory(tenant_a, case_id)
     svc = InsightService()
     with repo_db.tenant_transaction(conn, tenant_a):
-        proposal = svc.propose_change(conn, tenant_id=tenant_a, case_id=case_id, work_id=work_id, insight_id=None, evidence_refs=[{"ref": "merchant:1"}], hypothesis_refs=[], content_diff={"title": "updated"}, cost_impact={"cost": "1"}, shared_resource_impact={"room": "shared"}, required_material=[{"content_hash": _hash("photo")}])
+        proposal = svc.propose_change(conn, tenant_id=tenant_a, case_id=case_id, work_id=work_id, insight_id=None, evidence_refs=[{"ref": "merchant:1"}], hypothesis_refs=[], content_diff={"title": "updated"}, cost_impact={"cost": "1"}, shared_resource_impact={"room": "shared"}, required_material=[{"content_hash": _hash("photo"), "purpose": "marketing", "channel": "website", "language": "zh"}])
         asset = svc.ingest_asset(conn, tenant_id=tenant_a, proposal_id=proposal["id"], source_scope="MERCHANT_SUBMITTED", media_kind="IMAGE", source_ref="merchant:photo", content_hash=_hash("photo"), metadata={})
         svc.record_scan(conn, tenant_id=tenant_a, asset_id=asset["id"], accepted=True)
         grant = svc.approve_rights(conn, tenant_id=tenant_a, asset_id=asset["id"], rights_holder_ref="merchant", purposes=["marketing"], channels=["website"], languages=["zh"], effective_at="2026-01-01T00:00:00Z", expires_at="2026-01-02T00:00:00Z", approval_ref="approval:asset")

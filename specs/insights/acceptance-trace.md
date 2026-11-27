@@ -1,10 +1,11 @@
 # ENG-11 驗收對照
 
-| 驗收 | 正式實作 | 本機證據 | PostgreSQL／外部限制 |
-| --- | --- | --- | --- |
-| A35：數字可重現，未知不捏造成原因 | `InsightService.record_observation` 與 `operating_insight.result_hash` | `tests.insight_service_test.ObservationTests` | `tests/db/test_insight_workflow.py` 用正式 migration 驗證 RLS 與 FK；沒有真實報表來源 |
-| A36：只問素材缺口 | `ask_missing_material` + `usable_asset_uses` | `MaterialRequestTests` | DB test 驗證 rights/channel/language/expiry 後才列為可用 |
-| A37/A38：素材掃描、權利與客訴隔離 | `record_scan`、`approve_rights`、asset CHECK constraint | `AssetRightsTests` | hosted PG 驗證 constraint；無真實防毒／媒體掃描器 |
-| A39 + ENG-08 接續 | `approve_proposal_for_service_version` 輸出 immutable content，再交 `PublicationService` | `ProposalToPublicationTests` | DB/connector mock 僅驗證流程，不代表 OTA/PMS 權利或真實發布 |
+| Finding／驗收項 | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
+| --- | --- | --- | --- | --- |
+| F1：migration lifecycle | `0011_insight_rights_integrity.*`；workflow migration count | 584cbbd 的 CI 腳本固定預期 8、實際已有 10；現在與 11 個 checked-in migrations 一致 | 靜態核對 `.github/workflows/repository-validation.yml`；hosted job 待候選後啟動 | 本 VM 無 PostgreSQL／psycopg，未本機跑 upgrade/rebuild |
+| A35 / F5：可重現觀察 | `InsightService.record_observation`；不將 hypothesis 放入 `result_hash` | 同查詢結果配不同假說不再改變 result hash；空 query/metric/dedupe 或三個量測結構被拒絕 | `python3 -m unittest discover -s tests -p '*test.py' -v`：179 passed | 無真實 BI query source；PG immutable trigger 待 hosted |
+| A36 / F2：只問真正缺口 | `find_usable_assets`、`ask_missing_material`；匹配 `(content_hash?, purpose, channel, language)` | 舊版只比 content hash，缺 hash 時能繞過；現僅同用途/渠道/語言的有效素材滿足需求 | 同上；`MaterialRequestTests` | tenant catalog 實跑與 RLS 待 hosted PG |
+| A37/A38 / F3：掃描、權利、撤回、衍生檔 | `record_scan`、`approve_rights`、`revoke_*`、recursive ancestor check；0011 FK/CHECK | 舊版 rights revision 固定 1、撤回與祖先失效未封鎖；現改為遞增 revision、撤回及祖先狀態排除 | 同上；`AssetRightsTests` | 未連真實防毒／內容掃描器；DB constraint probes 待 hosted PG |
+| A39 / F4：提案修訂與 ENG-03/08 接續 | `revise_proposal`、guarded state update、`create_and_prepare_publications` | 舊版可直接標 `APPROVED`；現先 `AWAITING_APPROVAL`，僅帶 `ApprovalRecord` id 呼叫 ENG-08 建 version/兩渠道 publication 後才標 `APPROVED` | 同上；`ProposalToPublicationTests` | 整合測試以 PublicationService mock 驗證邊界，未建立真實 ApprovalRecord／渠道帳號 |
 
 本切面不把 LLM 文字、附件本身或掃描成功視作商家批准；也不把本機／mock 結果宣稱為真實渠道上線。
