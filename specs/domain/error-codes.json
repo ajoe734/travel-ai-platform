@@ -159,6 +159,22 @@
       "source": "SA 08.3 存取與錯誤"
     },
     {
+      "code": "CASE_RESUME_VERIFICATION_REQUIRED",
+      "http_status": 403,
+      "retryable_default": false,
+      "meaning": "重撥或換入口的 case_resume 驗證未通過；不可依來電顯示、姓名或模型推測連回既有案件。",
+      "source": "SA UC-04; SA-AT-027",
+      "x_added_by": "ENG-10"
+    },
+    {
+      "code": "UNSAFE_PAYMENT_HANDOFF_REJECTED",
+      "http_status": 422,
+      "retryable_default": false,
+      "meaning": "語音流程嘗試接收或保存卡號／安全碼等付款資料；只能交付安全付款連結或已授權替代方式。",
+      "source": "SA UC-03",
+      "x_added_by": "ENG-10"
+    },
+    {
       "code": "WORK_PHASE_MISMATCH",
       "http_status": 409,
       "retryable_default": false,
