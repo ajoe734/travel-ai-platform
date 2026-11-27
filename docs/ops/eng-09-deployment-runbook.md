@@ -10,15 +10,19 @@
 
 ## 建置與全新環境資料庫基線
 
-需求鎖定於 `db/requirements.txt`：`psycopg[binary]==3.2.3`、`pytest==8.3.4`。使用 Python 3 與 PostgreSQL 16（CI 的已驗證版本）；migration 需能建立 role、extension 與 RLS，runtime 則以可 `SET ROLE app_role` 的非 superuser 登入。
+需求鎖定於 `db/requirements.txt`：`psycopg[binary]==3.2.3`、`pytest==8.3.4`、`jsonschema==4.23.0`。使用 Python 3 與 PostgreSQL 16（CI 的已驗證版本）；migration 需能建立 role、extension 與 RLS，runtime 則以可 `SET ROLE app_role` 的非 superuser 登入。
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r db/requirements.txt
+cp .env.example .env
+# Set DATABASE_URL / ENG02_ADMIN_DATABASE_URL to migration-admin URLs, and
+# TRAVEL_APP_DATABASE_URL to the non-superuser login role that SET ROLEs app_role.
+.venv/bin/python scripts/eng09_preflight.py --env-file .env
 export DATABASE_URL='postgresql://<migration-admin>:<secret>@<host>:5432/<empty-db>'
-python3 db/migrate.py upgrade
-python3 db/migrate.py status
-ENG02_ADMIN_DATABASE_URL="$DATABASE_URL" .venv/bin/pytest tests/db -v
+.venv/bin/python db/migrate.py upgrade
+.venv/bin/python db/migrate.py status
+ENG02_ADMIN_DATABASE_URL="$DATABASE_URL" .venv/bin/python -m pytest tests/db -v
 ```
 
 預期 `status` 列出 0001 至 0008 為 `applied`，而 DB suite 在 disposable database 跑過。每個 migration 的 rollback 邊界見相鄰的 `db/migrations/*.md`；全量 `downgrade --to 0` **只限空的 disposable verification database**，不可當作有商務資料環境的復原手段。
@@ -26,9 +30,7 @@ ENG02_ADMIN_DATABASE_URL="$DATABASE_URL" .venv/bin/pytest tests/db -v
 部署前後應執行：
 
 ```bash
-python3 scripts/validate_repository.py
-python3 -m py_compile db/migrate.py db/seeds/load_fixtures.py db/repository/*.py \
-  services/fulfillment/*.py services/publication/*.py services/workbench/*.py services/voice/*.py
+.venv/bin/python scripts/verify_eng09.py
 git diff --check
 ```
 
@@ -38,17 +40,17 @@ git diff --check
 
 每次 request／worker action 的結構化 log 必須帶入已存在的 `tenant_id`、`case_id`、`work_id`、`task_id`、`attempt_id`（若有）、`operation`、`business_key`、`environment`，以及 SA event envelope 定義的 `correlation_id`／`causation_id`（若有）。不得以旅客姓名、原始對話、付款資料或 connector credential 作為 trace 欄位。外部 reference 可由 `execution_attempt_observation.external_ref`、`completion_evidence.external_ref` 與 publication 的 `external_reference` 查回。
 
-目前沒有 exporter；部署 owner 必須將下列 read-only SQL 接到既有受控監控帳號／告警系統，並設定值班 owner、門檻與通知渠道。數字門檻不是產品政策，依環境容量與 provider SLA 設定並記錄版本。
+目前沒有 exporter；`db.repository.ops_repository.operational_alerts` 提供同一個 app_role/RLS 邊界下的 read-only 偵測投影，部署 owner 必須將它接到既有受控監控帳號／告警系統，並設定值班 owner、門檻與通知渠道。數字門檻不是產品政策，依環境容量與 provider SLA 設定並記錄版本。`services.ops.logging.structured_operation_log` 只允許 correlation 欄位並會遮蔽 credential/PII，不能把原始 payload 寫入 log。
 
 | 偵測項目 | 最小查詢／訊號 | 告警後的第一步 |
 | --- | --- | --- |
 | 查核超時或 UNKNOWN | `execution_task` 的 `status IN ('UNKNOWN','WAITING')` 且 `deadline < now()`，或 `next_run_at < now()` | 停止重送，依 task 的固定 business key/external reference 進行唯讀查核；建立/確認 escalation。 |
-| 授權失效 | command/worker log 的 `AUTHORIZATION_STALE`、`AUTHORIZATION_REVOKED`、`AUTHORIZATION_SCOPE_MISMATCH` | 不繞過閘門；核對 decision/approval/revocation 與 snapshot hash，需要時建立新版決策。 |
+| 授權失效 | `approval_revocation`、過期 `decision_request`、過期 `execution_authorization` 影響 `NEW/VALIDATING/READY` task | 不繞過閘門；核對 decision/approval/revocation 與 snapshot hash，需要時建立新版決策。 |
 | outbox 堆積 | `outbox_event WHERE published_at IS NULL` 的 count 與最早 `created_at` | 確認 dispatcher 是否存在、DB/RLS/consumer 健康；修復後以原 event ID 發送，不重建商務操作。 |
 | inbox 衝突/隔離 | `inbox_event.processing_status IN ('QUARANTINED','DEAD_LETTER')` 或 `inbox_event_conflict` 新增 | 保留原 payload/hash，停止套用衝突事件，核對 provider 簽章與 source event identity。 |
-| lease 卡住 | `execution_task.status='EXECUTING' AND lease_until <= now()` | 僅由 fence-aware worker 接手；先 reconciliation lookup，不能新 dispatch。 |
+| lease 卡住／發布卡住 | `EXECUTING` task 的 `lease_until <= now()`；`DISPATCHING/PENDING/UNKNOWN` publication 長時間未更新 | 僅由 fence-aware worker 接手；先 reconciliation lookup，不能新 dispatch。 |
 
-診斷 trace 時以同一 tenant 的 task 為根：`execution_task.work_id → work.case_id`，再用 `execution_attempt.task_id → execution_attempt_observation.external_ref` 和 `completion_evidence.task_id/external_ref` 串接。操作人員不得跨 tenant 直接掃資料；若需支援存取，先取得可追溯的臨時授權。
+診斷 trace 時呼叫 `assemble_trace(tenant_id, task_id)`：`execution_task.work_id → work.case_id`，並以 `execution_attempt.id → execution_attempt_observation.attempt_id` 串接；回傳 completion evidence、同 Case 的 order/payment/refund 外部參照與同業務鍵 publication 外部參照。操作人員不得跨 tenant 直接掃資料；若需支援存取，先取得可追溯的臨時授權。
 
 ## 備份、復原與錯誤演練
 
