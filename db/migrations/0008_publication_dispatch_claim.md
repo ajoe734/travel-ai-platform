@@ -1,4 +1,4 @@
-# 0007_publication_dispatch_claim
+# 0008_publication_dispatch_claim
 
 ## 內容
 
@@ -13,4 +13,4 @@ worker 在寫入後失敗，該列保留可查核的 business key，而不會被
 
 ## Forward-fix
 
-新增發布狀態時以新 migration 擴充 CHECK；不得重寫已套用的 0006 migration。
+新增發布狀態時以新 migration 擴充 CHECK；不得重寫已套用的 migration。

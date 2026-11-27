@@ -14,7 +14,7 @@
 | 每渠道獨立與部分成功 | 每渠道 publication key、`publication_summary`、正式 Ota UNKNOWN→reconcile | `test_ota_unknown_then_reconcile_and_rejected_are_independent_and_summarised` 讀到獨立 LIVE summary | hosted `db-repository-tests` | 真實 OTA 未驗 |
 | PENDING/UNKNOWN 與 schema integrity | migration tenant FK、service-version 三欄 FK、PENDING/UNKNOWN/FAILED/BLOCKED CHECK | `test_known_pending_is_not_unknown`；DB `test_publication_rls_and_pending_constraints` 驗 PENDING 缺 token 被拒與跨 tenant 讀取不可見 | scoped unit exit 0；DB hosted pending | 本機無 PostgreSQL |
 | 能力預檢與重試邊界 | `prepare_publications`／`claim_dispatch` 的四維 capability check、`PublicationService.retry_failed_publication` | `test_unsupported_pms_is_blocked_before_dispatch` 驗 Pms mock call count 0；`test_retry_uses_the_same_claim_gate_and_refuses_non_failed_rows` 驗非 FAILED 不可重開且 retry 必重走 claim gate | scoped unit 11 passed | 真實帳號權限未驗 |
-| F1 migration count | workflow assertion 已於前候選 `bc9091c` 修成 6 | hosted migration lifecycle 曾對該候選通過；本輪 schema 變更需重新跑同 job | hosted CI pending for closeout candidate | 不以舊 SHA CI 冒充本輪結果 |
+| F1 migration lifecycle 與 ENG-10 共用序列 | `0007_service_version_publication`、`0008_publication_dispatch_claim`；workflow count 8 | 前候選的兩個 0006 導致 runner 僅能取其一；同步 `dev` 後保留 ENG-10 0006，ENG-08 順序化為 0007/0008，並修正舊訂單 numeric 斷言 | 本機靜態 migration discovery、publication/full unit tests、repository validation；hosted lifecycle 與 DB suite 待此 SHA | 不以舊 SHA CI 冒充本輪結果 |
 
 修復 anchor：`17c4c1cc9ac9fc2537def20ad3dcef03229fb6e4`；closeout candidate 的完整 SHA 以 handoff machine truth 為準。
 本機已執行：`python3 -m unittest tests.publication_service_test -v`（11 passed）、
