@@ -1,6 +1,6 @@
 # ENG-09 驗收對照
 
-狀態：2026-11-27。R3 修復基線 commit 待本輪 closeout 建立（前一候選：`2324dcb31cffbd7dce90b8fb692bfca327a9e4e9`）。此表將 `docs/collaboration/backlog.md#eng-09` 的交付和可驗證證據分開；handoff 會記錄本輪最終 candidate SHA，未執行項目不以文件存在宣稱通過。
+狀態：2026-11-27。R3 修復基線 commit：`6b8a3eb5064f684702b1ee65877deba85982d755`（前一候選：`2324dcb31cffbd7dce90b8fb692bfca327a9e4e9`）。此表將 `docs/collaboration/backlog.md#eng-09` 的交付和可驗證證據分開；handoff 會記錄本輪最終 candidate SHA，未執行項目不以文件存在宣稱通過。
 
 | Finding／驗收項 | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
 | --- | --- | --- | --- | --- |
