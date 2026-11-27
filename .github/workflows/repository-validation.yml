@@ -63,8 +63,9 @@ jobs:
           python3 db/migrate.py upgrade
           python3 db/migrate.py status
           # Keep this count aligned with the complete checked-in migration set.
-          # ENG-10 owns 0006; ENG-08 follows with 0007 and 0008.
-          assert_applied_count 8
+          # ENG-10 owns 0006; ENG-08 owns 0007 and 0008; ENG-07 follows as
+          # 0009 after its locked candidate is integrated with the current base.
+          assert_applied_count 9
           echo "::endgroup::"
 
           echo "::group::full rollback"
@@ -76,7 +77,7 @@ jobs:
           echo "::group::rebuild"
           python3 db/migrate.py upgrade
           python3 db/migrate.py status
-          assert_applied_count 8
+          assert_applied_count 9
           echo "::endgroup::"
 
   db-repository-tests:
@@ -105,5 +106,5 @@ jobs:
           python3 -m venv .venv
           echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
           .venv/bin/pip install -r db/requirements.txt
-      - name: backlog ENG-02 acceptance -- tenant isolation, cross-tenant FK, refund concurrency, idempotency, approval immutability
+      - name: backlog ENG-02/07 acceptance -- tenant isolation, amount reservations, idempotency, approvals and Credit ledger
         run: pytest tests/db -v
