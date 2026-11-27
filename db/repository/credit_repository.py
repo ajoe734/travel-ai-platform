@@ -176,7 +176,9 @@ def reverse_credit_redemption(
     """
     original = conn.execute(
         """SELECT account_id, grant_id, amount_minor_units, currency, entry_type
-             FROM credit_ledger_entry WHERE tenant_id = %s AND id = %s FOR UPDATE""",
+             FROM credit_ledger_entry
+             WHERE tenant_id = %s AND id = %s
+             FOR KEY SHARE""",
         (tenant_id, redemption_entry_id),
     ).fetchone()
     if original is None or original[4] != "REDEEM":
