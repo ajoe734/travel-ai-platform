@@ -19,6 +19,7 @@ from connectors.types import SideEffect, SideEffectDisposition
 from connectors.errors import CapabilityUnavailableError
 from db.repository import publication_repository as publications
 from services.authorization import canonical_json
+from services.authorization.temporal import is_at_or_before
 
 
 class PublicationError(ValueError):
@@ -46,7 +47,11 @@ def _structured_diff(base: dict[str, Any] | None, current: dict[str, Any]) -> di
 
 
 def _scope_matches(item: dict[str, Any], *, tenant_id: str, service_id: str, version: int,
-                   channel: str | None = None, account: str | None = None) -> bool:
+                   now: str, channel: str | None = None, account: str | None = None) -> bool:
+    # A manifest item can narrow an otherwise-effective approval further.  It
+    # must not remain usable after its own expiry.
+    if item.get("expires_at") is not None and is_at_or_before(str(item["expires_at"]), now):
+        return False
     ref = item.get("resource_ref") or {}
     if (item.get("operation") != "publication.update" or ref.get("tenant_id") != tenant_id
             or str(ref.get("id")) != str(service_id) or str(item.get("resource_revision")) != str(version)):
@@ -57,7 +62,8 @@ def _scope_matches(item: dict[str, Any], *, tenant_id: str, service_id: str, ver
 
 def _assert_approval_integrity(conn: Any, *, tenant_id: str, approval_id: str, now: str,
                                service_id: str, version: int, content: dict[str, Any],
-                               channel: str | None = None, account: str | None = None) -> None:
+                               base_version: int | None = None, channel: str | None = None,
+                               account: str | None = None) -> None:
     """Bind every publication command to the immutable approved content/scope."""
     from db.repository import approval_repository
     approval = approval_repository.get_approval_record(conn, tenant_id=tenant_id, approval_id=approval_id)
@@ -70,11 +76,16 @@ def _assert_approval_integrity(conn: Any, *, tenant_id: str, approval_id: str, n
     if canonical_json.payload_hash(approval["approved_payload"]) != approval["payload_hash"]:
         raise PublicationError("APPROVAL_PAYLOAD_HASH_MISMATCH")
     payload = approval["approved_payload"]
+    try:
+        content_matches = canonical_json.payload_hash(payload.get("content")) == canonical_json.payload_hash(content)
+    except (TypeError, ValueError):
+        content_matches = False
     if (str(payload.get("service_id")) != str(service_id) or str(payload.get("version")) != str(version)
-            or payload.get("content") != content):
+            or not content_matches
+            or ("base_version" in payload and payload["base_version"] != base_version)):
         raise PublicationError("APPROVAL_CONTENT_MISMATCH")
     if not any(_scope_matches(item, tenant_id=tenant_id, service_id=service_id, version=version,
-                              channel=channel, account=account) for item in approval["scope_manifest"]):
+                              now=now, channel=channel, account=account) for item in approval["scope_manifest"]):
         raise PublicationError("APPROVAL_SCOPE_MISMATCH")
 
 
@@ -87,7 +98,8 @@ class PublicationService:
         if not approval_id:
             raise PublicationError("APPROVAL_REQUIRED")
         _assert_approval_integrity(conn, tenant_id=tenant_id, approval_id=approval_id, now=now,
-                                   service_id=service_id, version=version, content=content)
+                                   service_id=service_id, version=version, content=content,
+                                   base_version=base_version)
         version_id = version_id or str(uuid.uuid4())
         publications.create_service_version(
             conn, tenant_id=tenant_id, version_id=version_id, service_id=service_id, version=version,
@@ -210,8 +222,8 @@ class PublicationService:
         """Save a provider response/readback for exactly one publication row.
 
         A `Succeeded` response only turns LIVE when its source revision equals
-        this row's desired version; stale events are retained as FAILED rather
-        than overwriting the newer desired version.
+        this row's desired version.  Stale events are retained as evidence
+        without overwriting or terminally failing the newer desired version.
         """
         current = publications.get_publication(conn, tenant_id=tenant_id, publication_id=publication_id)
         if current is None:

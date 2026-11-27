@@ -12,6 +12,8 @@ import psycopg
 import pytest
 
 from connectors.mocks.ota_delayed_publication import OtaDelayedPublicationMock
+from connectors.mocks.pms_nightly import PmsNightlyMock
+from connectors.types import Succeeded, Unknown
 from db.repository import approval_repository, db as repo_db, publication_repository
 from services.authorization import canonical_json
 from services.publication.service import PublicationError, PublicationService
@@ -64,41 +66,77 @@ def test_approved_version_is_immutable_and_keeps_old_order_untouched(conn, admin
             admin_conn.execute("UPDATE service_version SET content='{}'::jsonb WHERE tenant_id=%s AND id=%s", (tenant_a, version_id))
 
 
-def test_ota_unknown_then_reconcile_and_rejected_are_independent_and_summarised(conn, tenant_a, case_factory, work_factory):
+def test_multi_channel_partial_publication_retry_and_summary(conn, tenant_a, case_factory, work_factory):
+    """Production repository path: each channel keeps its own outcome/retry boundary."""
     case_id = case_factory(tenant_a)
     work_id = work_factory(tenant_a, case_id)
     service_id, version_id = str(uuid.uuid4()), str(uuid.uuid4())
     content = {"title": "v2"}
-    approval_id, now = _approval(conn, tenant_a, work_id, service_id, 2, content)
+    approval_id, now = _approval(conn, tenant_a, work_id, service_id, 2, content,
+        targets=[("website", "web"), ("ota-1", "ota-a"), ("ota-2", "ota-b")])
     svc, ota = PublicationService(), OtaDelayedPublicationMock()
+    pms = PmsNightlyMock({})
     with repo_db.tenant_transaction(conn, tenant_a):
         svc.create_approved_version(conn, tenant_id=tenant_a, service_id=service_id, version=2, content=content,
             approval_id=approval_id, now=now, version_id=version_id)
-        publication_repository.set_channel_access(conn, tenant_id=tenant_a, channel="ota", connector_account_id="ota-a", environment="MOCK", publication_enabled=True, reason=None)
+        for channel, account in (("website", "web"), ("ota-1", "ota-a"), ("ota-2", "ota-b"), ("pms", "pms")):
+            publication_repository.set_channel_access(conn, tenant_id=tenant_a, channel=channel, connector_account_id=account, environment="MOCK", publication_enabled=True, reason=None)
         intents, blocked = svc.prepare_publications(conn, tenant_id=tenant_a, service_version_id=version_id, service_version=2,
-            targets=[{"channel": "ota", "connector_account_id": "ota-a", "environment": "MOCK"}], now=now)
-    assert not blocked
-    intent = intents[0]
+            targets=[
+                {"channel": "website", "connector_account_id": "web", "environment": "MOCK"},
+                {"channel": "ota-1", "connector_account_id": "ota-a", "environment": "MOCK"},
+                {"channel": "ota-2", "connector_account_id": "ota-b", "environment": "MOCK"},
+                {"channel": "pms", "connector_account_id": "pms", "environment": "MOCK"},
+            ], now=now, connectors={("pms", "pms", "MOCK"): pms})
+    assert blocked[0]["status"] == "BLOCKED"
+    assert pms.publication_call_count == 0
+    by_channel = {intent.channel: intent for intent in intents}
     with repo_db.tenant_transaction(conn, tenant_a):
-        claimed = svc.claim_dispatch(conn, tenant_id=tenant_a, intent=intent, connector=ota, now=now)
-    assert claimed is not None
-    result = svc.dispatch_publication(tenant_id=tenant_a, intent=claimed, connector=ota, now=now, simulate_response_lost=True)
+        claimed = {channel: svc.claim_dispatch(conn, tenant_id=tenant_a, intent=intent, connector=ota, now=now)
+                   for channel, intent in by_channel.items()}
+    assert all(claimed.values())
+    dispatched = {channel: svc.dispatch_publication(tenant_id=tenant_a, intent=intent, connector=ota, now=now)
+                  for channel, intent in claimed.items()}
     with repo_db.tenant_transaction(conn, tenant_a):
-        unknown = svc.record_connector_result(conn, tenant_id=tenant_a, publication_id=claimed.publication_id,
-                                              expected_revision=claimed.expected_revision, result=result, now=now)
-    assert unknown["status"] == "UNKNOWN"
-    ota.advance_review(tenant_a, intent.business_key, "LIVE_VERIFIED")
+        rows = {channel: svc.record_connector_result(conn, tenant_id=tenant_a, publication_id=intent.publication_id,
+                 expected_revision=intent.expected_revision, result=dispatched[channel], now=now)
+                for channel, intent in claimed.items()}
+    assert rows["website"]["status"] == rows["ota-1"]["status"] == rows["ota-2"]["status"] == "PENDING"
+    ota.advance_review(tenant_a, by_channel["website"].business_key, "LIVE_VERIFIED")
+    ota.advance_review(tenant_a, by_channel["ota-2"].business_key, "REJECTED")
     with repo_db.tenant_transaction(conn, tenant_a):
-        reconciliation = svc.claim_reconciliation(conn, tenant_id=tenant_a, publication_id=intent.publication_id,
-                                                   expected_revision=unknown["revision"])
-        token = publication_repository.get_publication(conn, tenant_id=tenant_a, publication_id=intent.publication_id)["reconciliation_token"]
-    readback = svc.reconcile_publication(tenant_id=tenant_a, intent=reconciliation, reconciliation_token=token, connector=ota, now=now)
+        reconciliations = {channel: svc.claim_reconciliation(conn, tenant_id=tenant_a, publication_id=by_channel[channel].publication_id,
+            expected_revision=rows[channel]["revision"]) for channel in ("website", "ota-2")}
+        tokens = {channel: publication_repository.get_publication(conn, tenant_id=tenant_a, publication_id=by_channel[channel].publication_id)["reconciliation_token"]
+                  for channel in reconciliations}
+    readbacks = {channel: svc.reconcile_publication(tenant_id=tenant_a, intent=reconciliations[channel], reconciliation_token=tokens[channel], connector=ota, now=now)
+                 for channel in reconciliations}
     with repo_db.tenant_transaction(conn, tenant_a):
-        live = svc.record_connector_result(conn, tenant_id=tenant_a, publication_id=intent.publication_id,
-                                           expected_revision=reconciliation.expected_revision, result=readback, now=now)
+        live = svc.record_connector_result(conn, tenant_id=tenant_a, publication_id=by_channel["website"].publication_id,
+                                           expected_revision=reconciliations["website"].expected_revision, result=readbacks["website"], now=now)
+        failed = svc.record_connector_result(conn, tenant_id=tenant_a, publication_id=by_channel["ota-2"].publication_id,
+                                             expected_revision=reconciliations["ota-2"].expected_revision, result=readbacks["ota-2"], now=now)
         summary = publication_repository.publication_summary(conn, tenant_id=tenant_a, service_version_id=version_id)
     assert live["status"] == "LIVE"
-    assert summary == {"LIVE": 1}
+    assert failed["status"] == "FAILED"
+    assert summary == {"LIVE": 1, "PENDING": 1, "FAILED": 1, "BLOCKED": 1}
+    with repo_db.tenant_transaction(conn, tenant_a):
+        pending = publication_repository.get_publication(conn, tenant_id=tenant_a, publication_id=by_channel["ota-1"].publication_id)
+        unknown = svc.record_connector_result(conn, tenant_id=tenant_a, publication_id=pending["id"], expected_revision=pending["revision"],
+            result=Unknown("retry-token", "LOOKUP_DELAY", "test", now), now=now)
+        retry = svc.retry_failed_publication(conn, tenant_id=tenant_a, publication_id=failed["id"],
+                                             expected_revision=failed["revision"], connector=ota, now=now)
+        assert retry is not None
+        for channel in ("website",):
+            current = publication_repository.get_publication(conn, tenant_id=tenant_a, publication_id=by_channel[channel].publication_id)
+            with pytest.raises(PublicationError, match="PUBLICATION_RETRY_NOT_ALLOWED"):
+                svc.retry_failed_publication(conn, tenant_id=tenant_a, publication_id=current["id"], expected_revision=current["revision"], connector=ota, now=now)
+        with pytest.raises(PublicationError, match="PUBLICATION_RETRY_NOT_ALLOWED"):
+            svc.retry_failed_publication(conn, tenant_id=tenant_a, publication_id=unknown["id"], expected_revision=unknown["revision"], connector=ota, now=now)
+        blocked_row = blocked[0]
+        with pytest.raises(PublicationError, match="PUBLICATION_RETRY_NOT_ALLOWED"):
+            svc.retry_failed_publication(conn, tenant_id=tenant_a, publication_id=blocked_row["id"], expected_revision=blocked_row["revision"], connector=pms, now=now)
+    assert retry.channel == "ota-2"
 
 
 def test_publication_rls_and_pending_constraints(conn, tenant_a, tenant_b, case_factory, work_factory):
@@ -117,6 +155,35 @@ def test_publication_rls_and_pending_constraints(conn, tenant_a, tenant_b, case_
                 status="PENDING", submitted_version=1, external_reference="only-reference")
     with repo_db.tenant_transaction(conn, tenant_b):
         assert publication_repository.get_publication(conn, tenant_id=tenant_b, publication_id=row["id"]) is None
+
+
+def test_late_v1_readback_cannot_overwrite_real_newer_live_publication(conn, tenant_a, case_factory, work_factory):
+    """Exercise the has_newer_live_publication SQL join, not a patched substitute."""
+    case_id, work_id, service_id = case_factory(tenant_a), None, str(uuid.uuid4())
+    work_id, content = work_factory(tenant_a, case_id), {"title": "versioned"}
+    svc = PublicationService()
+    approval_v1, now = _approval(conn, tenant_a, work_id, service_id, 1, content, targets=[("ota", "ota-a")])
+    approval_v2, _ = _approval(conn, tenant_a, work_id, service_id, 2, content, targets=[("ota", "ota-a")])
+    v1, v2 = str(uuid.uuid4()), str(uuid.uuid4())
+    p1, p2 = str(uuid.uuid4()), str(uuid.uuid4())
+    with repo_db.tenant_transaction(conn, tenant_a):
+        svc.create_approved_version(conn, tenant_id=tenant_a, service_id=service_id, version=1, content=content,
+            approval_id=approval_v1, now=now, version_id=v1)
+        svc.create_approved_version(conn, tenant_id=tenant_a, service_id=service_id, version=2, content=content,
+            approval_id=approval_v2, now=now, version_id=v2)
+        old = publication_repository.create_publication(conn, tenant_id=tenant_a, publication_id=p1, service_version_id=v1,
+            channel="ota", connector_account_id="ota-a", environment="MOCK", business_key="publication:old", desired_version=1)
+        new = publication_repository.create_publication(conn, tenant_id=tenant_a, publication_id=p2, service_version_id=v2,
+            channel="ota", connector_account_id="ota-a", environment="MOCK", business_key="publication:new", desired_version=2)
+        old = publication_repository.observe_publication(conn, tenant_id=tenant_a, publication_id=p1, expected_revision=old["revision"],
+            status="PENDING", submitted_version=1, external_reference="old-ref", reconciliation_token="old-token")
+        publication_repository.observe_publication(conn, tenant_id=tenant_a, publication_id=p2, expected_revision=new["revision"],
+            status="LIVE", submitted_version=2, observed_version=2, external_reference="new-ref", observed_at=now)
+        assert publication_repository.has_newer_live_publication(conn, tenant_id=tenant_a, publication_id=p1)
+        saved = svc.record_connector_result(conn, tenant_id=tenant_a, publication_id=p1, expected_revision=old["revision"],
+            result=Succeeded("old-ref", {}, ("evidence",), now, source_revision="1"), now=now)
+    assert saved["status"] == "PENDING"
+    assert saved["revision"] == old["revision"]
 
 
 def test_approval_content_tenant_expiry_and_revocation_are_rechecked(conn, tenant_a, tenant_b, case_factory, work_factory):

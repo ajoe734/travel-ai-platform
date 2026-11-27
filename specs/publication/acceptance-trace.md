@@ -1,24 +1,21 @@
 # ENG-08 驗收對照
 
-執行環境：本機 Python 3。服務層測試只替換 repository 邊界，不替換
-`PublicationService`、ENG-04 `OperationResult` 或 mock adapter；本 VM 沒有 psycopg/PostgreSQL，
-資料庫案例由 hosted CI 的正式 migration/repository 路徑執行。
+本輪修復基線：`4944cfff5de286bc2b21c00b9afd09b1a6cd0d61`（reviewer reopen）；本文件所在
+closeout commit 是待交審的新 candidate，SHA 與 hosted run 由 handoff machine truth 鎖定。服務層
+測試只替換 persistence 邊界，不替換 `PublicationService`、ENG-04 `OperationResult` 或 mock adapter。
+本 VM 沒有 psycopg/PostgreSQL；下列標為 DB 的案例必須由 hosted CI 的正式 migration/repository
+路徑執行，不能把本機 syntax pass 當成 PostgreSQL 驗收。
 
 | Finding／驗收項 | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
 | --- | --- | --- | --- | --- |
-| F2：OTA REJECTED crash | `service.py::record_connector_result` 不再讀取 `Failed.external_reference` | 舊候選會 `AttributeError`；`test_rejected_ota_reconcile_maps_failed_without_missing_external_reference` 以正式 Ota mock 的 REJECTED readback 寫成 FAILED | `python3 -m unittest tests.publication_service_test -v` → 11 tests, exit 0 | DB write 分支待 hosted |
-| F3：過期／終態與跨版本 readback | `record_connector_result` 拒絕 `FAILED → PENDING`，並在寫 LIVE 前由 repository 查詢同 target 的較新 LIVE 版本 | `test_late_pending_cannot_regress_failed_publication` 及 `test_late_old_version_readback_cannot_overwrite_newer_live_target` 均驗證不寫入 | 同上；跨版本 SQL path 待 hosted | 本機無 PostgreSQL |
-| F4：批准內容、tenant、scope 與撤回 | `create_approved_version` 以 `canonical_json.payload_hash` 綁 `approved_payload.content`；`prepare`／`claim_dispatch` 每次重查有效期、`resource_ref.tenant_id`、service/version、channel/account | DB `test_approval_content_tenant_expiry_and_revocation_are_rechecked` 驗 tampered price、錯 tenant、過期拒絕；`test_unapproved_target_and_revocation_block_before_connector_write` 驗未授權 target 與撤回後 connector backend 為空 | GitHub Actions `45990415796` 的 `db-repository-tests` success（30 passed；正式 migration/repository path） | 本機缺 psycopg/PostgreSQL；真實帳號未驗 |
-| F7：外部 I/O 交易邊界 | `claim_dispatch`/`claim_reconciliation` 為 TX1；`dispatch_publication`/`reconcile_publication` 只回 connector result；`record_connector_result` 為 TX2。0008 加入 durable `DISPATCHING` CAS claim | DB workflow 明確在 transaction 外呼叫兩個 connector 方法；`BLOCKED`、批准撤回與 capability 不會生成 dispatch | scoped unit 11 passed；GitHub Actions `45990415796` DB suite success | 尚未接入 worker/outbox scheduler；無真實 OTA |
-| 批准、差異及舊訂單 | migration approval FK/不可變 trigger/base_version/change_diff；`create_approved_version` 驗完整批准 binding | `test_approved_version_is_immutable_and_keeps_old_order_untouched` 現建立 payment/order chain，讀回差異並確認既有 order 金額未變 | GitHub Actions `45990415796` DB suite success（30 passed） | 本機無 PostgreSQL |
-| 每渠道獨立與部分成功 | 每渠道 publication key、`publication_summary`、正式 Ota UNKNOWN→reconcile | `test_ota_unknown_then_reconcile_and_rejected_are_independent_and_summarised` 讀到獨立 LIVE summary | GitHub Actions `45990415796` DB suite success | 真實 OTA 未驗 |
-| PENDING/UNKNOWN 與 schema integrity | migration tenant FK、service-version 三欄 FK、PENDING/UNKNOWN/FAILED/BLOCKED CHECK | `test_known_pending_is_not_unknown`；DB `test_publication_rls_and_pending_constraints` 驗 PENDING 缺 token 被拒與跨 tenant 讀取不可見 | scoped unit exit 0；GitHub Actions `45990415796` DB suite success | 本機無 PostgreSQL |
-| 能力預檢與重試邊界 | `prepare_publications`／`claim_dispatch` 的四維 capability check、`PublicationService.retry_failed_publication` | `test_unsupported_pms_is_blocked_before_dispatch` 驗 Pms mock call count 0；`test_retry_uses_the_same_claim_gate_and_refuses_non_failed_rows` 驗非 FAILED 不可重開且 retry 必重走 claim gate | scoped unit 11 passed | 真實帳號權限未驗 |
-| F1 migration lifecycle 與 ENG-10 共用序列 | `0007_service_version_publication`、`0008_publication_dispatch_claim`；workflow count 8 | 前候選的兩個 0006 導致 runner 僅能取其一；同步 `dev` 後保留 ENG-10 0006，ENG-08 順序化為 0007/0008，並修正舊訂單 numeric 斷言 | GitHub Actions `45990415796`：validate、migration lifecycle、DB suite 全部 success（30 DB tests） | 無真實供應商驗收 |
+| R2 rollback：`DISPATCHING → UNKNOWN` | `0008_publication_dispatch_claim.down.sql` 對 `reconciliation_token` 使用 `COALESCE(..., 'rollback-dispatch-claim:' \|\| business_key)` | 舊版在 `DISPATCHING` 且 token 為 NULL 時違反 0007 `publication_unknown_has_reconciliation` CHECK；新版 downgrade SQL 留下 deterministic token | 靜態 SQL 與 migration 約束逐欄核對；hosted `db-migration-lifecycle` 待新 candidate | 本機無 PostgreSQL，空庫 downgrade 不足以覆蓋此列資料情境 |
+| F4 R4：item expiry、JSON 型別與 base version binding | `service.py::_scope_matches` 現收 `now` 並用 `is_at_or_before` 拒絕 scope item expiry；`_assert_approval_integrity` 對 content 使用 canonical payload hash、且比對 payload 中存在的 `base_version` | 舊 `expires_at=2020` scope 在 2026 仍可用，`True == 1` 可繞過內容比對，base version 未綁定；新 unit 三個拒絕案例均通過 | `python3 -m unittest tests.publication_service_test -v` → 14 passed, exit 0（本機 Python 3.12） | DB approval-record 路徑待 hosted DB suite；真實商家批准／帳號未驗 |
+| F6：mock patch binding | `tests/publication_service_test.py` 將 `observe_publication` 的 patch 明確綁到 `observe`，不再把 `has_newer_live_publication`／`get_service_version` 誤當寫入 mock | 舊測試的 call-count 不驗證實際寫入 boundary；新版 `observe.assert_called_once()`／`assert_not_called()` 直接核對 | 同上，14 passed | 仍是 repository-boundary unit test；SQL CAS 由 DB suite 驗證 |
+| 多渠道部分成功、PMS capability 與 retry | `tests/db/test_publication_workflow.py::test_multi_channel_partial_publication_retry_and_summary` 使用正式 repository：website LIVE、OTA-1 PENDING→UNKNOWN、OTA-2 REJECTED→FAILED、PMS BLOCKED；assert `publication_summary` 和 `publication_call_count == 0`，並只重開 FAILED | 前候選只有一個 OTA、沒有 REJECTED/summary/PMS/retry 實證；新增案例保留每一列獨立狀態，且 LIVE/UNKNOWN/BLOCKED retry 皆拒絕 | `python3 -m py_compile tests/db/test_publication_workflow.py` → exit 0；hosted `db-repository-tests` 待新 candidate | 本機缺 psycopg/PostgreSQL；mock 不代表真實 OTA/PMS |
+| 舊事件不覆蓋新版 | `test_late_v1_readback_cannot_overwrite_real_newer_live_publication` 以 production `has_newer_live_publication` SQL join 建立 v2 LIVE，再送 v1 成功 readback | 舊事件不應把 v1 推到 LIVE；新 DB 測試 assert SQL 回 true、v1 維持 PENDING 與 revision 不變 | py_compile exit 0；hosted `db-repository-tests` 待新 candidate | 本機無 PostgreSQL |
+| 前輪既有 migration/DB 證據 | `0007_service_version_publication` + `0008_publication_dispatch_claim`；workflow count 8 | 舊 migration collision 已解；基線 candidate 的 hosted CI 完成 0→8→0→8 及 repository suite | GitHub Actions run `45990635589`（SHA `4944cfff`）：validate、db-migration-lifecycle、db-repository-tests 全綠，**36 passed** | 此 run 不涵蓋本輪新測試；不可當作新 candidate green |
 
-修復 anchor：`17c4c1cc9ac9fc2537def20ad3dcef03229fb6e4`；closeout candidate 的完整 SHA 以 handoff machine truth 為準。
-本機已執行：`python3 -m unittest tests.publication_service_test -v`（11 passed）、
-`python3 -m py_compile tests/publication_service_test.py tests/db/test_publication_workflow.py services/publication/service.py db/repository/publication_repository.py`（exit 0）、
-`git diff --check`（exit 0）、`python3 -m unittest discover -s tests -p '*_test.py' -v`（168 passed）及
-`python3 scripts/validate_repository.py`（passed；12 originals、253 local links、4 JavaScript）。未執行：
-`tests/db/test_publication_workflow.py`；本 VM 缺 psycopg/PostgreSQL，需 hosted `db-repository-tests` 驗證。
+本機已完成：`python3 -m unittest tests.publication_service_test -v`（14 passed）、
+`python3 -m py_compile services/publication/service.py tests/publication_service_test.py tests/db/test_publication_workflow.py`
+（exit 0）與 `git diff --check`（exit 0）。交審前仍需跑完整 unittest、repository validation 與
+hosted PostgreSQL migration/repository checks；真實 OTA/PMS、browser 和 worker scheduler 不屬本候選驗證。

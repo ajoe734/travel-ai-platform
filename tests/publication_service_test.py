@@ -5,7 +5,8 @@ import unittest
 from connectors.mocks.ota_delayed_publication import OtaDelayedPublicationMock
 from connectors.mocks.pms_nightly import PmsNightlyMock
 from connectors.types import Failed, Pending, Succeeded, SideEffectDisposition
-from services.publication.service import PublicationService
+from services.publication.service import PublicationError, PublicationService, _assert_approval_integrity
+from services.authorization import canonical_json
 
 class _Repo:
     def __init__(self): self.row={"revision":1,"desired_version":2,"status":"NOT_STARTED"}; self.saved=[]
@@ -20,8 +21,9 @@ class ResultSafetyTest(unittest.TestCase):
         with patch("services.publication.service.publications.get_publication", return_value=website), patch(
             "services.publication.service.publications.observe_publication",
             side_effect=lambda _conn, **kw: kw,
-        ), patch("services.publication.service.publications.has_newer_live_publication", return_value=False,
-        ) as observe:
+        ) as observe, patch(
+            "services.publication.service.publications.has_newer_live_publication", return_value=False,
+        ):
             row = svc.record_connector_result(
                 None,
                 tenant_id="t",
@@ -39,6 +41,7 @@ class ResultSafetyTest(unittest.TestCase):
         self.assertEqual(row["status"], "LIVE")
         self.assertEqual(row["publication_id"], "website-publication")
         self.assertEqual(row["observed_version"], 2)
+        observe.assert_called_once()
 
     def test_source_revision_must_match_before_live(self):
         # Exercises the real method with only the repository boundary replaced;
@@ -60,8 +63,7 @@ class ResultSafetyTest(unittest.TestCase):
         fresh = Succeeded("ota-2", {}, ("new-evidence",), "2026-11-27T00:00:01Z", source_revision="2")
         with patch("services.publication.service.publications.get_publication", return_value=current), patch(
             "services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw
-        ), patch("services.publication.service.publications.has_newer_live_publication", return_value=False,
-        ) as observe:
+        ) as observe, patch("services.publication.service.publications.has_newer_live_publication", return_value=False):
             self.assertEqual(svc.record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1, result=stale, now="now"), current)
             saved = svc.record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1, result=fresh, now="now")
         self.assertEqual(saved["status"], "LIVE")
@@ -128,6 +130,61 @@ class ResultSafetyTest(unittest.TestCase):
         observe.assert_not_called()
 
 
+class ApprovalIntegrityRegressionTest(unittest.TestCase):
+    def _approval(self, *, content, scope, base_version_marker=object()):
+        payload = {"service_id": "service", "version": 2, "content": content}
+        if base_version_marker is not _UNSET:
+            payload["base_version"] = base_version_marker
+        return {
+            "canonicalization_version": canonical_json.CANONICALIZATION_VERSION,
+            "approved_payload": payload,
+            "payload_hash": canonical_json.payload_hash(payload),
+            "scope_manifest": [scope],
+        }
+
+    def _assert_with(self, approval, content, *, base_version=None):
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        repository = SimpleNamespace(
+            get_approval_record=lambda _conn, **_kwargs: approval,
+            approval_is_effective=lambda _conn, **_kwargs: True,
+        )
+        # The service intentionally imports this persistence boundary lazily
+        # so its pure result tests do not require psycopg.
+        with patch.dict(sys.modules, {"db.repository.approval_repository": repository}):
+            _assert_approval_integrity(None, tenant_id="tenant", approval_id="approval", now="2026-11-27T00:00:00Z",
+                                       service_id="service", version=2, content=content,
+                                       base_version=base_version, channel="ota", account="account")
+
+    def test_expired_scope_item_is_rejected(self):
+        approval = self._approval(content={"price": 1}, scope={
+            "operation": "publication.update", "resource_ref": {"tenant_id": "tenant", "id": "service"},
+            "resource_revision": 2, "channel": "ota", "account": "account", "expires_at": "2020-01-01T00:00:00Z",
+        }, base_version_marker=_UNSET)
+        with self.assertRaisesRegex(PublicationError, "APPROVAL_SCOPE_MISMATCH"):
+            self._assert_with(approval, {"price": 1})
+
+    def test_bool_is_not_accepted_for_approved_integer_content(self):
+        approval = self._approval(content={"price": 1}, scope={
+            "operation": "publication.update", "resource_ref": {"tenant_id": "tenant", "id": "service"},
+            "resource_revision": 2, "channel": "ota", "account": "account",
+        }, base_version_marker=_UNSET)
+        with self.assertRaisesRegex(PublicationError, "APPROVAL_CONTENT_MISMATCH"):
+            self._assert_with(approval, {"price": True})
+
+    def test_approved_base_version_must_match_command(self):
+        approval = self._approval(content={"price": "1000"}, scope={
+            "operation": "publication.update", "resource_ref": {"tenant_id": "tenant", "id": "service"},
+            "resource_revision": 2, "channel": "ota", "account": "account",
+        }, base_version_marker=1)
+        with self.assertRaisesRegex(PublicationError, "APPROVAL_CONTENT_MISMATCH"):
+            self._assert_with(approval, {"price": "1000"}, base_version=0)
+
+
+_UNSET = object()
+
+
 class PublicationPreparationTest(unittest.TestCase):
     def test_disabled_channel_is_blocked_without_a_dispatch_intent(self):
         """Missing/disabled access is actionable locally, not a connector call."""
@@ -158,7 +215,7 @@ class PublicationPreparationTest(unittest.TestCase):
         ), patch("services.publication.service._assert_approval_integrity"), patch(
             "services.publication.service.publications.get_service_version",
             return_value={"approval_id": "approval", "service_id": "service", "version": 2, "content": {"title": "v2"}},
-        ) as record_block:
+        ):
             intents, blocked = svc.prepare_publications(
                 None,
                 tenant_id="t",
