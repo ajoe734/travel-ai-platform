@@ -41,6 +41,11 @@
 | Hosted DB：cancel 勝出時 worker 誤拋 phase error | `FulfillmentService.dispatch_booking` 的 TX1 state gate | `1b9b06b` 在 GitHub Actions run `45981629163` 使 7 個 workflow 測試通過，但 cancel 勝出後 dispatch 讀到 `CANCELLED` 時誤拋 `WORK_PHASE_MISMATCH`，留下執行緒結果為空；修正版明確回傳 `CANCELLED_BEFORE_DISPATCH`，而且在寫 attempt／呼叫 connector 前返回。 | 最小正式重現：`pytest tests/db/test_fulfillment_workflow.py::test_cancel_vs_dispatch_race_has_exactly_one_deterministic_winner -v`；舊候選 hosted 結果 `TypeError: 'NoneType' object is not subscriptable`，根因見同 run 的 dispatch thread stack trace。 | 本機無 psycopg/PostgreSQL；下一個 hosted DB job 待驗 |
 | Hosted DB：通知 task snapshot 含 UUID 無法寫 JSONB | `execution_repository.create_execution_task` 的 JSONB serialization | `1b9b06b` 的 notification acceptance test 將 repository 回傳的 `uuid.UUID` 放入 notification snapshot；`json.dumps` 直接崩潰。修正版在正式 repository JSONB 邊界統一以 `default=str` 持久化 canonical wire IDs，並不改變 task 的 tenant／business-key 去重條件。 | 最小正式重現：`pytest tests/db/test_fulfillment_workflow.py::test_notification_failure_is_separate_from_booking_success -v`；舊候選 hosted 結果 `TypeError: Object of type UUID is not JSON serializable`（run `45981629163`，2 failed, 17 passed）。 | 本機無 psycopg/PostgreSQL；下一個 hosted DB job 待驗 |
 
+R2 修正版 candidate `c2994fe8a81e91e0a26b0ce4b3392032b03d48c8` 已由 GitHub Actions
+run `45981890206` 的 `db-repository-tests` 實際執行確認：`19 passed in 0.89s`。
+同 run 的 `validate` 與 `db-migration-lifecycle` 亦通過；這些是 PostgreSQL container
+模擬與 repository 層驗證，不是實際供應商或生產驗收。
+
 ## 本機靜態驗證（已實跑，非假設）
 
 ```text
