@@ -20,6 +20,30 @@ class ObservationTests(unittest.TestCase):
         InsightService().record_observation(None, tenant_id="t", case_id="c", query_version="v2", metric_key="lost-reason", period_start="2026-01-01T00:00:00Z", period_end="2026-01-02T00:00:00Z", numerator={"value": 1}, denominator={"value": 3}, coverage={"complete": False}, case_dedupe_version="case-v1", observed_facts=[{"source_ref": "message:explicit", "value": "time"}], hypotheses=[{"label": "silence is UNKNOWN"}], evidence_refs=[{"ref": "query-run:7"}], insight_id="i")
         self.assertEqual(create.call_args.kwargs["result_hash"], "f363ac87508a5d53ff2d125175ce45ab25878a7afbd8107afdec736e055c74c2")
 
+    @patch("services.insights.service.repo.create_insight", return_value={"id": "i"})
+    def test_same_controlled_result_has_same_hash_despite_hypothesis(self, create):
+        svc = InsightService()
+        args = dict(tenant_id="t", case_id="c", query_version="v1", metric_key="metric", period_start="2026-01-01T00:00:00Z",
+            period_end="2026-01-02T00:00:00Z", numerator={"n": 1}, denominator={"n": 2}, coverage={"complete": True},
+            case_dedupe_version="case-v1", observed_facts=[{"source_ref": "query:1"}], evidence_refs=[])
+        svc.record_observation(None, hypotheses=[{"label": "time might matter"}], **args)
+        first = create.call_args.kwargs["result_hash"]
+        svc.record_observation(None, hypotheses=[{"label": "price might matter"}], **args)
+        self.assertEqual(first, create.call_args.kwargs["result_hash"])
+
+    def test_observation_rejects_empty_reproducibility_metadata_and_measures(self):
+        args = dict(tenant_id="t", case_id="c", query_version="v1", metric_key="metric", period_start="2026-01-01T00:00:00Z",
+            period_end="2026-01-02T00:00:00Z", numerator={"n": 1}, denominator={"n": 2}, coverage={"complete": True},
+            case_dedupe_version="case-v1", observed_facts=[{"source_ref": "query:1"}], hypotheses=[], evidence_refs=[])
+        for key in ("query_version", "metric_key", "case_dedupe_version"):
+            invalid = dict(args); invalid[key] = " "
+            with self.subTest(key=key), self.assertRaisesRegex(InsightError, "INSIGHT_REPRODUCIBILITY_METADATA_REQUIRED"):
+                InsightService().record_observation(None, **invalid)
+        for key in ("numerator", "denominator", "coverage"):
+            invalid = dict(args); invalid[key] = {}
+            with self.subTest(key=key), self.assertRaisesRegex(InsightError, "INSIGHT_MEASURE_STRUCTURE_REQUIRED"):
+                InsightService().record_observation(None, **invalid)
+
 
 class MaterialRequestTests(unittest.TestCase):
     @patch("services.insights.service.repo.create_material_request")
@@ -83,6 +107,22 @@ class AssetRightsTests(unittest.TestCase):
     def test_revoked_grant_cannot_be_bound_to_a_proposal(self, asset, grant, ancestor):
         with self.assertRaisesRegex(InsightError, "ASSET_USE_INVALID"):
             InsightService().bind_asset_to_proposal(None, tenant_id="t", proposal_id="p", asset_id="a", rights_grant_id="g", purpose="marketing", channel="website", language="zh")
+
+    @patch("services.insights.service.repo.revoke_asset", return_value={"id": "a", "lifecycle_status": "REVOKED"})
+    @patch("services.insights.service.repo.revoke_rights_grant", return_value={"id": "g", "status": "REVOKED"})
+    def test_revoke_operations_expose_durable_repository_results(self, rights, asset):
+        svc = InsightService()
+        self.assertEqual(svc.revoke_asset(None, tenant_id="t", asset_id="a")["lifecycle_status"], "REVOKED")
+        self.assertEqual(svc.revoke_rights(None, tenant_id="t", rights_grant_id="g")["status"], "REVOKED")
+
+
+class DiscussionTests(unittest.TestCase):
+    @patch("services.insights.service.repo.append_discussion", return_value=2)
+    def test_append_discussion_delegates_serialized_sequence_to_repository(self, append):
+        sequence = InsightService().append_discussion(None, tenant_id="t", proposal_id="p", speaker="MERCHANT",
+            message_kind="TEXT", body={"text": "change title"}, source_refs=[], message_id="m")
+        self.assertEqual(sequence, 2)
+        self.assertEqual(append.call_args.kwargs["message_id"], "m")
 
 
 class ProposalToPublicationTests(unittest.TestCase):

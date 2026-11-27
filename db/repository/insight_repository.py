@@ -131,7 +131,8 @@ def usable_asset_uses(conn: Any, *, tenant_id: str, proposal_id: str, now: str) 
          AND a.source_scope <> 'COMPLAINT_EVIDENCE' AND r.status='APPROVED' AND r.effective_at<=%s
          AND (r.expires_at IS NULL OR r.expires_at>%s) AND r.permitted_purposes ? u.purpose
          AND r.permitted_channels ? u.channel AND r.permitted_languages ? u.language
-       AND NOT EXISTS (SELECT 1 FROM ancestry x WHERE x.leaf_id=a.id AND (x.source_scope='COMPLAINT_EVIDENCE' OR x.lifecycle_status IN ('REVOKED','EXPIRED','REJECTED')))""", (tenant_id, proposal_id, tenant_id, proposal_id, now, now)).fetchall()
+       AND NOT EXISTS (SELECT 1 FROM ancestry x WHERE x.tenant_id=a.tenant_id AND x.leaf_id=a.id AND (x.source_scope='COMPLAINT_EVIDENCE' OR x.lifecycle_status IN ('REVOKED','EXPIRED','REJECTED')))
+       ORDER BY u.asset_id,u.rights_grant_id,u.purpose,u.channel,u.language""", (tenant_id, proposal_id, tenant_id, proposal_id, now, now)).fetchall()
     return [row_as_dict(["asset_id","rights_grant_id","purpose","channel","language","content_hash"], row) for row in rows]
 
 
