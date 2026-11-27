@@ -119,7 +119,15 @@ def test_proposal_uses_real_approval_and_two_independent_publications(conn, tena
             expected_revision=1, now="2026-02-01T00:00:00Z", base_content={"title": "old"})
         assert content["eng11_proposal"]["cost_impact"] == {"labor": "10"}
         assert content["eng11_proposal"]["shared_resource_impact"] == {"guide": "shared"}
-        assert [item["channel"] for item in content["eng11_proposal"]["asset_uses"]] == ["ota", "website"]
+        asset_uses = content["eng11_proposal"]["asset_uses"]
+        assert {item["channel"] for item in asset_uses} == {"website", "ota"}
+        assert [
+            (item["asset_id"], item["rights_grant_id"], item["purpose"], item["channel"], item["language"])
+            for item in asset_uses
+        ] == sorted(
+            (item["asset_id"], item["rights_grant_id"], item["purpose"], item["channel"], item["language"])
+            for item in asset_uses
+        )
         approval_id, now = _approval(conn, tenant_a, work_id, service_id, 2, content, targets)
         for channel, account in targets:
             publication_repository.set_channel_access(conn, tenant_id=tenant_a, channel=channel,
@@ -179,8 +187,17 @@ def test_catalog_gap_discussion_and_asset_revocation_are_enforced_in_postgres(co
         proposal = svc.propose_change(conn, tenant_id=tenant_a, case_id=case_id, work_id=work_id, insight_id=None,
             evidence_refs=[{"ref": "merchant:brief"}], hypothesis_refs=[], content_diff={"title": "new"},
             cost_impact={"labor": "10"}, shared_resource_impact={"guide": "shared"}, required_material=[requirement])
+        website_asset = svc.ingest_asset(conn, tenant_id=tenant_a, proposal_id=proposal["id"], source_scope="MERCHANT_SUBMITTED",
+            media_kind="IMAGE", source_ref="merchant:website", content_hash=_hash("website"), metadata={})
+        svc.record_scan(conn, tenant_id=tenant_a, asset_id=website_asset["id"], accepted=True)
+        svc.approve_rights(conn, tenant_id=tenant_a, asset_id=website_asset["id"], rights_holder_ref="merchant",
+            purposes=["marketing"], channels=["website"], languages=["zh"], effective_at="2026-01-01T00:00:00Z",
+            expires_at=None, approval_ref="merchant:rights")
+        # A website/zh catalog asset cannot satisfy this proposal's ota/en scope.
         assert svc.ask_missing_material(conn, tenant_id=tenant_a, proposal_id=proposal["id"], requested_channels=["ota"],
             deadline=None, now="2026-02-01T00:00:00Z") == [requirement]
+        request = conn.execute("SELECT required_items,requested_channels FROM material_request WHERE tenant_id=%s AND proposal_id=%s", (tenant_a, proposal["id"])).fetchone()
+        assert request == ([requirement], ["ota"])
         asset = svc.ingest_asset(conn, tenant_id=tenant_a, proposal_id=proposal["id"], source_scope="MERCHANT_SUBMITTED",
             media_kind="IMAGE", source_ref="merchant:ota", content_hash=_hash("ota"), metadata={})
         svc.record_scan(conn, tenant_id=tenant_a, asset_id=asset["id"], accepted=True)
@@ -190,11 +207,10 @@ def test_catalog_gap_discussion_and_asset_revocation_are_enforced_in_postgres(co
         # The tenant catalog, rather than merely an already-bound use, satisfies the exact scope.
         assert svc.ask_missing_material(conn, tenant_id=tenant_a, proposal_id=proposal["id"], requested_channels=["ota"],
             deadline=None, now="2026-02-01T00:00:00Z") == []
-        assert insight_repository.find_usable_assets(conn, tenant_id=tenant_b, now="2026-02-01T00:00:00Z") == []
         assert svc.append_discussion(conn, tenant_id=tenant_a, proposal_id=proposal["id"], speaker="MERCHANT",
-            message_kind="TEXT", body={"text": "first"}, source_refs=[]) == 1
+            message_kind="QUESTION", body={"text": "first"}, source_refs=[]) == 1
         assert svc.append_discussion(conn, tenant_id=tenant_a, proposal_id=proposal["id"], speaker="ASSISTANT",
-            message_kind="TEXT", body={"text": "second"}, source_refs=[]) == 2
+            message_kind="ANSWER", body={"text": "second"}, source_refs=[]) == 2
         svc.bind_asset_to_proposal(conn, tenant_id=tenant_a, proposal_id=proposal["id"], asset_id=asset["id"],
             rights_grant_id=grant["id"], purpose="marketing", channel="ota", language="en")
         svc.revoke_rights(conn, tenant_id=tenant_a, rights_grant_id=grant["id"])
@@ -202,6 +218,64 @@ def test_catalog_gap_discussion_and_asset_revocation_are_enforced_in_postgres(co
         svc.revoke_asset(conn, tenant_id=tenant_a, asset_id=asset["id"])
         with pytest.raises(InsightError, match="ASSET_REVOKE_INVALID"):
             svc.revoke_asset(conn, tenant_id=tenant_a, asset_id=asset["id"])
+    # The session tenant, not the repository parameter, is the RLS authority.
+    with repo_db.tenant_transaction(conn, tenant_b):
+        assert insight_repository.find_usable_assets(conn, tenant_id=tenant_a, now="2026-02-01T00:00:00Z") == []
+        assert insight_repository.find_usable_assets(conn, tenant_id=tenant_b, now="2026-02-01T00:00:00Z") == []
+
+
+def test_asset_lineage_and_rights_integrity_constraints_are_enforced_in_postgres(conn, tenant_a, case_factory, work_factory, admin_database_url):
+    """Exercise recursive lineage SQL and 0011 constraints through real schema."""
+    case_id, work_id = case_factory(tenant_a), None
+    work_id = work_factory(tenant_a, case_id)
+    svc = InsightService()
+    requirement = {"requirement_id": "hero", "purpose": "marketing", "channel": "website", "language": "zh"}
+    with repo_db.tenant_transaction(conn, tenant_a):
+        proposal = svc.propose_change(conn, tenant_id=tenant_a, case_id=case_id, work_id=work_id, insight_id=None,
+            evidence_refs=[{"ref": "merchant:brief"}], hypothesis_refs=[], content_diff={"title": "new"},
+            cost_impact={"labor": "10"}, shared_resource_impact={"guide": "shared"}, required_material=[requirement])
+        unchecked = svc.ingest_asset(conn, tenant_id=tenant_a, proposal_id=proposal["id"], source_scope="MERCHANT_SUBMITTED",
+            media_kind="IMAGE", source_ref="merchant:unchecked", content_hash=_hash("unchecked"), metadata={})
+        with pytest.raises(psycopg.Error):
+            with conn.transaction():
+                conn.execute("UPDATE asset SET lifecycle_status='AVAILABLE' WHERE tenant_id=%s AND id=%s", (tenant_a, unchecked["id"]))
+        root = svc.ingest_asset(conn, tenant_id=tenant_a, proposal_id=proposal["id"], source_scope="MERCHANT_SUBMITTED",
+            media_kind="IMAGE", source_ref="merchant:root", content_hash=_hash("root"), metadata={})
+        svc.record_scan(conn, tenant_id=tenant_a, asset_id=root["id"], accepted=True)
+        svc.approve_rights(conn, tenant_id=tenant_a, asset_id=root["id"], rights_holder_ref="merchant", purposes=["marketing"],
+            channels=["website"], languages=["zh"], effective_at="2026-01-01T00:00:00Z", expires_at=None, approval_ref="merchant:rights")
+        child = svc.ingest_asset(conn, tenant_id=tenant_a, proposal_id=proposal["id"], parent_asset_id=root["id"], source_scope="SYSTEM_GENERATED",
+            media_kind="IMAGE", source_ref="merchant:derived", content_hash=_hash("derived"), metadata={})
+        svc.record_scan(conn, tenant_id=tenant_a, asset_id=child["id"], accepted=True)
+        child_grant = svc.approve_rights(conn, tenant_id=tenant_a, asset_id=child["id"], rights_holder_ref="merchant", purposes=["marketing"],
+            channels=["website"], languages=["zh"], effective_at="2026-01-01T00:00:00Z", expires_at=None, approval_ref="merchant:rights")
+        svc.bind_asset_to_proposal(conn, tenant_id=tenant_a, proposal_id=proposal["id"], asset_id=child["id"], rights_grant_id=child_grant["id"],
+            purpose="marketing", channel="website", language="zh")
+        assert {asset["asset_id"] for asset in insight_repository.usable_asset_uses(conn, tenant_id=tenant_a, proposal_id=proposal["id"], now="2026-02-01T00:00:00Z")} == {child["id"]}
+        svc.revoke_asset(conn, tenant_id=tenant_a, asset_id=root["id"])
+        assert insight_repository.usable_asset_uses(conn, tenant_id=tenant_a, proposal_id=proposal["id"], now="2026-02-01T00:00:00Z") == []
+        assert child["id"] not in {asset["asset_id"] for asset in insight_repository.find_usable_assets(conn, tenant_id=tenant_a, now="2026-02-01T00:00:00Z")}
+        complaint = svc.ingest_asset(conn, tenant_id=tenant_a, proposal_id=proposal["id"], source_scope="COMPLAINT_EVIDENCE",
+            media_kind="IMAGE", source_ref="complaint:root", content_hash=_hash("complaint-root"), metadata={})
+        complaint_child = svc.ingest_asset(conn, tenant_id=tenant_a, proposal_id=proposal["id"], parent_asset_id=complaint["id"], source_scope="SYSTEM_GENERATED",
+            media_kind="IMAGE", source_ref="complaint:derived", content_hash=_hash("complaint-derived"), metadata={})
+        svc.record_scan(conn, tenant_id=tenant_a, asset_id=complaint_child["id"], accepted=True)
+        assert insight_repository.asset_has_invalid_ancestor(conn, tenant_id=tenant_a, asset_id=complaint_child["id"])
+        with pytest.raises(InsightError, match="COMPLAINT_ASSET_MARKETING_PROHIBITED"):
+            svc.approve_rights(conn, tenant_id=tenant_a, asset_id=complaint_child["id"], rights_holder_ref="merchant", purposes=["marketing"],
+                channels=["website"], languages=["zh"], effective_at="2026-01-01T00:00:00Z", expires_at=None, approval_ref="merchant:rights")
+        other = svc.ingest_asset(conn, tenant_id=tenant_a, proposal_id=proposal["id"], source_scope="MERCHANT_SUBMITTED",
+            media_kind="IMAGE", source_ref="merchant:other", content_hash=_hash("other"), metadata={})
+        with pytest.raises(psycopg.Error):
+            with conn.transaction():
+                conn.execute("INSERT INTO proposal_asset_use (tenant_id,proposal_id,asset_id,rights_grant_id,purpose,channel,language) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (tenant_a, proposal["id"], other["id"], child_grant["id"], "marketing", "website", "zh"))
+        message_id = str(uuid.uuid4())
+        svc.append_discussion(conn, tenant_id=tenant_a, proposal_id=proposal["id"], message_id=message_id, speaker="MERCHANT",
+            message_kind="FACT", body={"text": "immutable"}, source_refs=[])
+    with psycopg.connect(admin_database_url, autocommit=True) as admin:
+        with pytest.raises(psycopg.Error):
+            admin.execute("UPDATE merchant_discussion_message SET body=%s WHERE tenant_id=%s AND id=%s", ('{"text":"mutated"}', tenant_a, message_id))
 
 
 def test_insight_lineage_and_immutable_constraints_are_database_enforced(conn, tenant_a, tenant_b, case_factory, work_factory, admin_database_url):

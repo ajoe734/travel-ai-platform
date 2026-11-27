@@ -120,7 +120,7 @@ class DiscussionTests(unittest.TestCase):
     @patch("services.insights.service.repo.append_discussion", return_value=2)
     def test_append_discussion_delegates_serialized_sequence_to_repository(self, append):
         sequence = InsightService().append_discussion(None, tenant_id="t", proposal_id="p", speaker="MERCHANT",
-            message_kind="TEXT", body={"text": "change title"}, source_refs=[], message_id="m")
+            message_kind="QUESTION", body={"text": "change title"}, source_refs=[], message_id="m")
         self.assertEqual(sequence, 2)
         self.assertEqual(append.call_args.kwargs["message_id"], "m")
 
