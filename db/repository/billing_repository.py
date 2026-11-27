@@ -96,10 +96,8 @@ def record_business_fee(
         result = _row(_FEE_COLUMNS, existing)
         expected = (contract_version_id, request_hash, usage_kind, usage_quantity, unit,
                     amount_minor_units, currency, currency_scale_ref)
-        actual = tuple(result[k] for k in (
-            "contract_version_id", "request_hash", "usage_kind", "usage_quantity", "unit",
-            "amount_minor_units", "currency", "currency_scale_ref",
-        ))
+        actual = (str(result["contract_version_id"]), result["request_hash"], result["usage_kind"], result["usage_quantity"], result["unit"],
+                  result["amount_minor_units"], result["currency"], result["currency_scale_ref"])
         if actual != expected:
             raise IdempotencyConflict("business fee key was replayed with different contract or charge content")
         return result
@@ -165,7 +163,8 @@ def record_settlement_entry(
     ).fetchone()
     if existing is not None:
         result = _row(_SETTLEMENT_COLUMNS, existing)
-        actual = tuple(result[k] for k in ("order_id", "contract_version_id", "attribution_kind", "entry_kind", "amount_minor_units", "currency", "currency_scale_ref", "basis"))
+        actual = (str(result["order_id"]), str(result["contract_version_id"]) if result["contract_version_id"] else None,
+                  result["attribution_kind"], result["entry_kind"], result["amount_minor_units"], result["currency"], result["currency_scale_ref"], result["basis"])
         expected = (order_id, contract_version_id, attribution_kind, entry_kind, amount_minor_units, currency, currency_scale_ref, basis)
         if actual != expected:
             raise IdempotencyConflict("settlement business key was replayed with different content")
@@ -199,7 +198,7 @@ def record_settlement_reversal(
     ).fetchone()
     if existing is not None:
         result = _row(_SETTLEMENT_COLUMNS, existing)
-        if (result["refund_id"] != refund_id or result["reversal_of"] != original_entry_id
+        if (str(result["refund_id"]) != str(refund_id) or str(result["reversal_of"]) != str(original_entry_id)
                 or result["amount_minor_units"] != -amount_minor_units or result["basis"] != basis):
             raise IdempotencyConflict("settlement reversal key was replayed with different content")
         return result
