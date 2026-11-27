@@ -23,8 +23,8 @@ import pytest
 
 from connectors.mocks.experience_reservation import ExperienceReservationMock
 from db.repository import db as repo_db
-from db.repository import execution_repository, work_repository
-from services.fulfillment.errors import TaskAlreadyDispatchedError, WorkPhaseMismatchError
+from db.repository import approval_repository, execution_repository, work_repository
+from services.fulfillment.errors import TaskAlreadyDispatchedError, TaskNotFoundError, WorkPhaseMismatchError
 from services.fulfillment.service import FulfillmentService
 
 SESSION_ID = "fulfillment-test-session"
@@ -186,6 +186,14 @@ def test_crash_after_external_success_recovers_executing_intent_via_lookup(
     assert stranded["status"] == "EXECUTING"
     assert dispatch_attempts == 1
 
+    # The scheduler, rather than an out-of-band direct call, rediscovers the
+    # abandoned durable intent after its lease expires.
+    with repo_db.tenant_transaction(conn, tenant_a):
+        due = execution_repository.list_tasks_due_for_reconciliation(
+            conn, tenant_id=tenant_a, now="2026-12-01T00:10:31+00:00",
+        )
+    assert [task["id"] for task in due] == [task_id]
+
     restarted = FulfillmentService(
         fulfillment._connector,
         worker_connection_factory=lambda: repo_db.connect(app_database_url),
@@ -255,6 +263,7 @@ def test_cancel_vs_dispatch_race_has_exactly_one_deterministic_winner(
     task_id = approved["task"]["id"]
     work_id = accepted["work"]["id"]
 
+    connector = ExperienceReservationMock({SESSION_ID: SESSION_CAPACITY})
     barrier = threading.Barrier(2)
     results = [None, None]
 
@@ -262,7 +271,7 @@ def test_cancel_vs_dispatch_race_has_exactly_one_deterministic_winner(
         connection = repo_db.connect(app_database_url)
         try:
             service = FulfillmentService(
-                ExperienceReservationMock({SESSION_ID: SESSION_CAPACITY}),
+                connector,
                 worker_connection_factory=lambda: repo_db.connect(app_database_url),
             )
             barrier.wait()
@@ -279,7 +288,7 @@ def test_cancel_vs_dispatch_race_has_exactly_one_deterministic_winner(
         connection = repo_db.connect(app_database_url)
         try:
             service = FulfillmentService(
-                ExperienceReservationMock({SESSION_ID: SESSION_CAPACITY}),
+                connector,
                 worker_connection_factory=lambda: repo_db.connect(app_database_url),
             )
             barrier.wait()
@@ -312,12 +321,20 @@ def test_cancel_vs_dispatch_race_has_exactly_one_deterministic_winner(
         assert dispatch_outcome == "CANCELLED_BEFORE_DISPATCH"
         assert task["status"] == "CANCELLED"
         assert work["status"] == "CANCELLED"
+        with repo_db.tenant_transaction(conn, tenant_a):
+            attempts = conn.execute(
+                "SELECT count(*) FROM execution_attempt WHERE tenant_id = %s AND task_id = %s",
+                (tenant_a, task_id),
+            ).fetchone()[0]
+        assert attempts == 0
+        assert len(connector._store._records) == 0
     else:
         # dispatch won: cancellation is rejected, and the already-sent
         # action proceeds to its normal terminal outcome.
         assert cancel_outcome == "TOO_LATE"
         assert dispatch_outcome in ("SUCCEEDED", "FAILED", "UNKNOWN")
         assert task["status"] != "NEW"
+        assert len(connector._store._records) == 1
 
 
 def test_overdue_unknown_task_gets_one_idempotent_escalation_not_an_automatic_failure(
@@ -392,4 +409,135 @@ def test_dispatch_booking_rejects_a_task_that_is_not_new(fulfillment, conn, tena
         with repo_db.tenant_transaction(conn, tenant_a):
             fulfillment.dispatch_booking(
                 conn, tenant_id=tenant_a, task_id=task_id, holder="worker-1", now="2026-12-01T00:11:00+00:00",
+            )
+
+
+def test_terminal_task_cannot_be_released_into_a_new_lease(fulfillment, conn, tenant_a, case_factory):
+    accepted, approved = _accept_and_approve(fulfillment, conn, tenant_a, case_factory(tenant_a))
+    task_id = approved["task"]["id"]
+    with repo_db.tenant_transaction(conn, tenant_a):
+        fulfillment.dispatch_booking(conn, tenant_id=tenant_a, task_id=task_id, holder="worker", now="2026-12-01T00:10:00+00:00")
+    with repo_db.tenant_transaction(conn, tenant_a):
+        assert execution_repository.acquire_lease(
+            conn, tenant_id=tenant_a, task_id=task_id, holder="late", now="2026-12-01T00:11:00+00:00",
+            lease_until="2026-12-01T00:12:00+00:00", allowed_statuses=("WAITING", "UNKNOWN", "EXECUTING"),
+        ) is None
+        assert execution_repository.get_execution_task(conn, tenant_id=tenant_a, task_id=task_id)["status"] == "DONE"
+
+
+def test_cancel_rejects_a_task_owned_by_another_work(fulfillment, conn, tenant_a, case_factory):
+    first, _ = _accept_and_approve(fulfillment, conn, tenant_a, case_factory(tenant_a))
+    _, second_approval = _accept_and_approve(fulfillment, conn, tenant_a, case_factory(tenant_a))
+    with pytest.raises(WorkPhaseMismatchError, match="does not belong"):
+        with repo_db.tenant_transaction(conn, tenant_a):
+            fulfillment.cancel_booking(
+                conn, tenant_id=tenant_a, work_id=first["work"]["id"], task_id=second_approval["task"]["id"],
+                reason="wrong work", now="2026-12-01T00:10:00+00:00",
+            )
+
+
+def test_webhook_applies_and_replays_received_event_after_lease_contention(fulfillment, conn, tenant_a, case_factory):
+    _, approved = _accept_and_approve(fulfillment, conn, tenant_a, case_factory(tenant_a))
+    task_id = approved["task"]["id"]
+    with repo_db.tenant_transaction(conn, tenant_a):
+        fulfillment.dispatch_booking(conn, tenant_id=tenant_a, task_id=task_id, holder="dispatch", now="2026-12-01T00:10:00+00:00", simulate_timeout=True)
+        execution_repository.acquire_lease(
+            conn, tenant_id=tenant_a, task_id=task_id, holder="other", now="2026-12-01T00:10:01+00:00",
+            lease_until="2026-12-01T00:10:30+00:00", allowed_statuses=("UNKNOWN",),
+        )
+    with repo_db.tenant_transaction(conn, tenant_a):
+        first = fulfillment.process_booking_webhook(
+            conn, tenant_id=tenant_a, task_id=task_id, event_id=str(uuid.uuid4()), source_event_id="received-replay",
+            producer="experience-mock", outcome="CONFIRMED", external_ref="supplier-1", now="2026-12-01T00:10:02+00:00",
+        )
+    assert first["applied"] is False
+    with repo_db.tenant_transaction(conn, tenant_a):
+        replay = fulfillment.process_booking_webhook(
+            conn, tenant_id=tenant_a, task_id=task_id, event_id=str(uuid.uuid4()), source_event_id="received-replay",
+            producer="experience-mock", outcome="CONFIRMED", external_ref="supplier-1", now="2026-12-01T00:10:31+00:00",
+        )
+    assert replay["inbox_outcome"] == "duplicate"
+    assert replay["applied"] is True
+    assert replay["task"]["status"] == "DONE"
+
+
+def test_webhook_same_source_id_different_payload_is_quarantined(fulfillment, conn, tenant_a, case_factory):
+    _, approved = _accept_and_approve(fulfillment, conn, tenant_a, case_factory(tenant_a))
+    task_id = approved["task"]["id"]
+    with repo_db.tenant_transaction(conn, tenant_a):
+        fulfillment.dispatch_booking(conn, tenant_id=tenant_a, task_id=task_id, holder="dispatch", now="2026-12-01T00:10:00+00:00", simulate_timeout=True)
+        first = fulfillment.process_booking_webhook(
+            conn, tenant_id=tenant_a, task_id=task_id, event_id=str(uuid.uuid4()), source_event_id="conflict-event",
+            producer="experience-mock", outcome="CONFIRMED", external_ref="supplier-1", now="2026-12-01T00:11:00+00:00",
+        )
+    assert first["applied"] is True
+    with repo_db.tenant_transaction(conn, tenant_a):
+        conflict = fulfillment.process_booking_webhook(
+            conn, tenant_id=tenant_a, task_id=task_id, event_id=str(uuid.uuid4()), source_event_id="conflict-event",
+            producer="experience-mock", outcome="REJECTED", external_ref="supplier-1", now="2026-12-01T00:12:00+00:00",
+        )
+    assert conflict == {"inbox_outcome": "conflict", "applied": False}
+
+
+def test_notification_failure_retries_once_then_done_is_idempotent(fulfillment, conn, tenant_a, case_factory):
+    accepted, _ = _accept_and_approve(fulfillment, conn, tenant_a, case_factory(tenant_a))
+    order_id = accepted["order"]["id"]
+    with repo_db.tenant_transaction(conn, tenant_a):
+        failed = fulfillment.send_notification(conn, tenant_id=tenant_a, work_id=accepted["work"]["id"], order_id=order_id, channel="SMS", now="2026-12-01T00:10:00+00:00", notifier=lambda: False)
+    with repo_db.tenant_transaction(conn, tenant_a):
+        done = fulfillment.send_notification(conn, tenant_id=tenant_a, work_id=accepted["work"]["id"], order_id=order_id, channel="SMS", now="2026-12-01T00:11:00+00:00", notifier=lambda: True)
+        attempts = conn.execute("SELECT count(*) FROM execution_attempt WHERE tenant_id = %s AND task_id = %s", (tenant_a, failed["id"])).fetchone()[0]
+        again = fulfillment.send_notification(conn, tenant_id=tenant_a, work_id=accepted["work"]["id"], order_id=order_id, channel="SMS", now="2026-12-01T00:12:00+00:00", notifier=lambda: True)
+        attempts_after = conn.execute("SELECT count(*) FROM execution_attempt WHERE tenant_id = %s AND task_id = %s", (tenant_a, failed["id"])).fetchone()[0]
+    assert done["status"] == again["status"] == "DONE"
+    assert attempts == attempts_after == 2
+
+
+def test_expired_revoked_and_cross_tenant_commands_cannot_authorize_dispatch(fulfillment, conn, tenant_a, tenant_b, case_factory):
+    accepted, approved = _accept_and_approve(fulfillment, conn, tenant_a, case_factory(tenant_a))
+    with repo_db.tenant_transaction(conn, tenant_a):
+        approval_repository.revoke_approval(
+            conn, tenant_id=tenant_a, revocation_id=str(uuid.uuid4()), approval_id=approved["approval_id"],
+            revoked_by={"actor_kind": "CUSTOMER", "actor_id": str(uuid.uuid4())}, reason="changed mind",
+            effective_at="2026-12-01T00:06:00+00:00",
+        )
+    with pytest.raises(WorkPhaseMismatchError):
+        with repo_db.tenant_transaction(conn, tenant_a):
+            fulfillment.dispatch_booking(conn, tenant_id=tenant_a, task_id=approved["task"]["id"], holder="dispatch", now="2026-12-01T00:10:00+00:00")
+    with pytest.raises(TaskNotFoundError):
+        with repo_db.tenant_transaction(conn, tenant_b):
+            fulfillment.cancel_booking(conn, tenant_id=tenant_b, work_id=accepted["work"]["id"], task_id=approved["task"]["id"], reason="cross tenant", now="2026-12-01T00:11:00+00:00")
+    with pytest.raises(TaskNotFoundError):
+        with repo_db.tenant_transaction(conn, tenant_b):
+            fulfillment.approve_consent(
+                conn, tenant_id=tenant_b, work_id=accepted["work"]["id"], decision_id=accepted["decision_id"],
+                expected_revision=1, selected_option_id="approve", approved_by={"actor_kind": "CUSTOMER", "actor_id": str(uuid.uuid4())},
+                verified_actor_ref="cross-tenant", scope_manifest=[{"item_id": "booking", "operation": "booking.create"}],
+                approved_at="2026-12-01T00:11:00+00:00", now="2026-12-01T00:11:00+00:00",
+            )
+    with pytest.raises(TaskNotFoundError):
+        with repo_db.tenant_transaction(conn, tenant_b):
+            fulfillment.dispatch_booking(conn, tenant_id=tenant_b, task_id=approved["task"]["id"], holder="cross", now="2026-12-01T00:11:00+00:00")
+    with repo_db.tenant_transaction(conn, tenant_b):
+        cross_webhook = fulfillment.process_booking_webhook(
+            conn, tenant_id=tenant_b, task_id=approved["task"]["id"], event_id=str(uuid.uuid4()), source_event_id="cross-tenant-event",
+            producer="experience-mock", outcome="REJECTED", external_ref="irrelevant", now="2026-12-01T00:11:00+00:00",
+        )
+    assert cross_webhook["applied"] is False
+
+    expired_case = case_factory(tenant_a)
+    with repo_db.tenant_transaction(conn, tenant_a):
+        expired = fulfillment.accept_order(
+            conn, tenant_id=tenant_a, case_id=expired_case, session_id=SESSION_ID, party_size=1,
+            unit_price_minor_units="100000", currency="TWD", currency_scale_ref="iso4217-minor-unit-2",
+            principal={"actor_kind": "CUSTOMER", "actor_id": str(uuid.uuid4())},
+            decision_expires_at="2026-12-01T00:01:00+00:00", now="2026-12-01T00:00:00+00:00",
+        )
+    with pytest.raises(WorkPhaseMismatchError, match="expired"):
+        with repo_db.tenant_transaction(conn, tenant_a):
+            fulfillment.approve_consent(
+                conn, tenant_id=tenant_a, work_id=expired["work"]["id"], decision_id=expired["decision_id"],
+                expected_revision=1, selected_option_id="approve", approved_by={"actor_kind": "CUSTOMER", "actor_id": str(uuid.uuid4())},
+                verified_actor_ref="expired", scope_manifest=[{"item_id": "booking", "operation": "booking.create"}],
+                approved_at="2026-12-01T00:02:00+00:00", now="2026-12-01T00:02:00+00:00",
             )

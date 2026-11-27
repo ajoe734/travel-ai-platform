@@ -46,6 +46,16 @@ run `45981890206` 的 `db-repository-tests` 實際執行確認：`19 passed in 0
 同 run 的 `validate` 與 `db-migration-lifecycle` 亦通過；這些是 PostgreSQL container
 模擬與 repository 層驗證，不是實際供應商或生產驗收。
 
+## R3 退修紀錄（candidate `2d4083f639e5d6b2d9df5b2be5af7dbd20a7ad96` → 下一候選待產生）
+
+| Finding／驗收項 | 原始碼依據與修改位置 | 舊版重現／靜態定位 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
+| --- | --- | --- | --- | --- |
+| F2 EXECUTING 崩潰復原、終態倒退 | `execution_repository.list_tasks_due_for_reconciliation`／`list_tasks_overdue_for_escalation`／`acquire_lease`；`FulfillmentService.reconcile_booking`、`process_booking_webhook` | 舊版僅排 WAITING/UNKNOWN 且 lease 無 status guard；過期 EXECUTING 永不被 scheduler 撿回，終態可能重新取得 lease。現兩個 scheduler 查詢含 lease 已過期的 EXECUTING；`acquire_lease` 強制 `status = ANY(allowed_statuses)`，所有 caller 明列合法狀態。 | `test_crash_after_external_success_recovers_executing_intent_via_lookup` 現先經 due list 撿回；`test_terminal_task_cannot_be_released_into_a_new_lease` 覆蓋終態 no-op。`py_compile` pass；DB test 待 hosted。 | 本機無 psycopg/Postgres，未能動態執行 DB 回歸。 |
+| F3 取消歸屬與競態證據 | `FulfillmentService.cancel_booking`；`test_cancel_vs_dispatch_race_has_exactly_one_deterministic_winner` | 舊版可用不同 Work 的 task 取消他人任務，且兩 racing service 各自有 connector ledger。現先核對 task/work tenant 歸屬和 Work 存在性，測試共用一個 connector，cancel 勝出時斷言 attempt=0、外部記錄=0；dispatch 勝出時記錄=1。 | `py_compile` pass；競態 DB regression 待 hosted。 | Mock connector 只證明 mock side effect，非真實 supplier。 |
+| F4 批准完整綁定與負向情境 | `approve_consent`、`_assert_dispatch_approval`、`test_expired_revoked_and_cross_tenant_commands_cannot_authorize_dispatch` | 舊版 dictionary comprehension 可掩蓋重複 manifest，且 dispatch 沒有核對 decision/payload 與 task。現 scope 必為唯一 booking item；approval 的 decision_id 和 payload 中 work/quote/order/session/party_size/operation 全數比對 task snapshot。新增過期 decision、approval revocation、跨 tenant approve/dispatch/cancel/webhook 回歸。 | `py_compile` pass；DB regression 待 hosted。 | 本機無 PostgreSQL/RLS 執行環境。 |
+| F5 webhook 重播與通知重試 | `process_booking_webhook`、`send_notification`；`test_webhook_applies_and_replays_received_event_after_lease_contention`、`test_webhook_same_source_id_different_payload_is_quarantined`、`test_notification_failure_retries_once_then_done_is_idempotent` | 舊版 lease conflict 留 RECEIVED inbox 後同事件永遠 DUPLICATE no-op。現僅當 DUPLICATE+RECEIVED 時以原 inbox row id 重播；payload 變更仍 CONFLICT/QUARANTINED。通知驗 attempt 1 failed、attempt 2 DONE、DONE 再呼叫不加 attempt。 | `py_compile` pass；DB regression 待 hosted。 | 同上。 |
+| F1 repository UUID wire 正規化 | 新增 `db/repository/rows.py`，套用所有 repository row-return path；`approval_repository`／`outbox_inbox_repository` JSONB serialization | 舊版 psycopg UUID 可從 repository 回傳或餵入 raw `json.dumps`。現在 repository return row 遞迴將 UUID 轉 string；JSONB 寫入均 `default=str`。 | `py_compile` pass；hosted DB test 待驗。 | 本機沒有 psycopg，不能以驅動實值動態驗證。 |
+
 ## 本機靜態驗證（已實跑，非假設）
 
 ```text

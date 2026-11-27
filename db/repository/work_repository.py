@@ -18,6 +18,7 @@ from typing import Any
 import psycopg
 
 from .errors import VersionConflict
+from .rows import row_as_dict
 
 _WORK_COLUMNS = [
     "tenant_id", "id", "case_id", "work_type", "objective", "completion_contract_version",
@@ -84,7 +85,7 @@ def create_work(
             status,
         ),
     ).fetchone()
-    return dict(zip(_WORK_COLUMNS, row))
+    return row_as_dict(_WORK_COLUMNS, row)
 
 
 def get_work(conn: psycopg.Connection, *, tenant_id: str, work_id: str) -> dict[str, Any] | None:
@@ -98,7 +99,7 @@ def get_work(conn: psycopg.Connection, *, tenant_id: str, work_id: str) -> dict[
     ).fetchone()
     if row is None:
         return None
-    return dict(zip(_WORK_COLUMNS, row))
+    return row_as_dict(_WORK_COLUMNS, row)
 
 
 def update_work_status(
@@ -152,7 +153,7 @@ def update_work_status(
     ).fetchone()
     if row is None:
         raise VersionConflict(f"work {work_id!r} is not at revision {expected_revision}")
-    return dict(zip(_WORK_COLUMNS, row))
+    return row_as_dict(_WORK_COLUMNS, row)
 
 
 def create_work_plan(
@@ -277,7 +278,7 @@ def create_completion_evidence(
         "external_ref", "source_revision", "observed_at", "verified_at", "payload_ref", "payload_hash",
         "verifier_version", "created_at",
     ]
-    return dict(zip(columns, row))
+    return row_as_dict(columns, row)
 
 
 _ESCALATION_COLUMNS = [
@@ -299,7 +300,7 @@ def get_open_escalation_for_task(
     ).fetchone()
     if row is None:
         return None
-    return dict(zip(_ESCALATION_COLUMNS, row))
+    return row_as_dict(_ESCALATION_COLUMNS, row)
 
 
 def create_escalation_if_absent(
@@ -329,7 +330,7 @@ def create_escalation_if_absent(
         """,
         (tenant_id, escalation_id, work_id, task_id, reason, json.dumps(owner, default=str), due_at),
     ).fetchone()
-    return dict(zip(_ESCALATION_COLUMNS, row)), True
+    return row_as_dict(_ESCALATION_COLUMNS, row), True
 
 
 def resolve_escalation(

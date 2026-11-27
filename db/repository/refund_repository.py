@@ -19,6 +19,7 @@ from typing import Any
 import psycopg
 
 from .errors import IdempotencyConflict, InsufficientRefundBalance
+from .rows import row_as_dict
 
 _REFUND_COLUMNS = [
     "tenant_id", "id", "payment_id", "operation", "business_key", "amount_minor_units",
@@ -61,7 +62,7 @@ def reserve_refund(
         (tenant_id, business_key),
     ).fetchone()
     if existing is not None:
-        row = dict(zip(_REFUND_COLUMNS, existing))
+        row = row_as_dict(_REFUND_COLUMNS, existing)
         if (
             str(row["payment_id"]) != str(payment_id)
             or row["amount_minor_units"] != amount_minor_units
@@ -101,7 +102,7 @@ def reserve_refund(
         """,
         (tenant_id, refund_id, payment_id, business_key, amount_minor_units, currency, currency_scale_ref),
     ).fetchone()
-    return dict(zip(_REFUND_COLUMNS, row))
+    return row_as_dict(_REFUND_COLUMNS, row)
 
 
 def mark_refund_succeeded(

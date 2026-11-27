@@ -16,6 +16,7 @@ from typing import Any
 import psycopg
 
 from .errors import IdempotencyConflict, VersionConflict
+from .rows import row_as_dict
 
 _COLUMNS = [
     "tenant_id", "id", "work_id", "kind", "parent_task_id", "operation", "business_key",
@@ -56,7 +57,7 @@ def create_execution_task(
         (tenant_id, operation, business_key),
     ).fetchone()
     if existing is not None:
-        row = dict(zip(_COLUMNS, existing))
+        row = row_as_dict(_COLUMNS, existing)
         if row["request_hash"] != request_hash:
             raise IdempotencyConflict(
                 f"business_key {business_key!r} already bound to a different request_hash"
@@ -86,7 +87,7 @@ def create_execution_task(
             deadline,
         ),
     ).fetchone()
-    return dict(zip(_COLUMNS, row))
+    return row_as_dict(_COLUMNS, row)
 
 
 def next_attempt_no(conn: psycopg.Connection, *, tenant_id: str, task_id: str) -> int:
@@ -133,7 +134,7 @@ def get_execution_task(conn: psycopg.Connection, *, tenant_id: str, task_id: str
     ).fetchone()
     if row is None:
         return None
-    return dict(zip(_LEASE_COLUMNS, row))
+    return row_as_dict(_LEASE_COLUMNS, row)
 
 
 def get_execution_task_by_business_key(
@@ -149,7 +150,7 @@ def get_execution_task_by_business_key(
     ).fetchone()
     if row is None:
         return None
-    return dict(zip(_LEASE_COLUMNS, row))
+    return row_as_dict(_LEASE_COLUMNS, row)
 
 
 def list_tasks_for_work(conn: psycopg.Connection, *, tenant_id: str, work_id: str) -> list[dict[str, Any]]:
@@ -162,7 +163,7 @@ def list_tasks_for_work(conn: psycopg.Connection, *, tenant_id: str, work_id: st
         """,
         (tenant_id, work_id),
     ).fetchall()
-    return [dict(zip(_LEASE_COLUMNS, row)) for row in rows]
+    return [row_as_dict(_LEASE_COLUMNS, row) for row in rows]
 
 
 def list_tasks_due_for_reconciliation(
@@ -175,14 +176,16 @@ def list_tasks_due_for_reconciliation(
         f"""
         SELECT {", ".join(_LEASE_COLUMNS)}
         FROM execution_task
-        WHERE tenant_id = %s AND status IN ('WAITING', 'UNKNOWN')
+        WHERE tenant_id = %s
+          AND (status IN ('WAITING', 'UNKNOWN')
+               OR (status = 'EXECUTING' AND (lease_until IS NULL OR lease_until <= %s)))
           AND (next_run_at IS NULL OR next_run_at <= %s)
           AND (lease_until IS NULL OR lease_until <= %s)
         ORDER BY created_at
         """,
-        (tenant_id, now, now),
+        (tenant_id, now, now, now),
     ).fetchall()
-    return [dict(zip(_LEASE_COLUMNS, row)) for row in rows]
+    return [row_as_dict(_LEASE_COLUMNS, row) for row in rows]
 
 
 def list_tasks_overdue_for_escalation(
@@ -194,13 +197,15 @@ def list_tasks_overdue_for_escalation(
         f"""
         SELECT {", ".join(_LEASE_COLUMNS)}
         FROM execution_task
-        WHERE tenant_id = %s AND status IN ('WAITING', 'UNKNOWN')
+        WHERE tenant_id = %s
+          AND (status IN ('WAITING', 'UNKNOWN')
+               OR (status = 'EXECUTING' AND (lease_until IS NULL OR lease_until <= %s)))
           AND deadline IS NOT NULL AND deadline <= %s
         ORDER BY created_at
         """,
-        (tenant_id, now),
+        (tenant_id, now, now),
     ).fetchall()
-    return [dict(zip(_LEASE_COLUMNS, row)) for row in rows]
+    return [row_as_dict(_LEASE_COLUMNS, row) for row in rows]
 
 
 def acquire_lease(
@@ -211,6 +216,7 @@ def acquire_lease(
     holder: str,
     now: str,
     lease_until: str,
+    allowed_statuses: tuple[str, ...],
 ) -> dict[str, Any] | None:
     """Atomically claim the task's lease and bump its fence (SD §6.3: "每次
     取租約原子增加 fence_token"). Returns None -- without raising -- when the
@@ -229,14 +235,15 @@ def acquire_lease(
             lease_fence_token = COALESCE(lease_fence_token, 0) + 1,
             lease_until = %s
         WHERE tenant_id = %s AND id = %s
+          AND status = ANY(%s)
           AND (lease_until IS NULL OR lease_until <= %s)
         RETURNING {", ".join(_LEASE_COLUMNS)}
         """,
-        (holder, lease_until, tenant_id, task_id, now),
+        (holder, lease_until, tenant_id, task_id, list(allowed_statuses), now),
     ).fetchone()
     if row is None:
         return None
-    return dict(zip(_LEASE_COLUMNS, row))
+    return row_as_dict(_LEASE_COLUMNS, row)
 
 
 def claim_new_task_for_dispatch(
@@ -267,7 +274,7 @@ def claim_new_task_for_dispatch(
         """,
         (holder, lease_until, tenant_id, task_id, now),
     ).fetchone()
-    return dict(zip(_LEASE_COLUMNS, row)) if row is not None else None
+    return row_as_dict(_LEASE_COLUMNS, row) if row is not None else None
 
 
 def release_lease(conn: psycopg.Connection, *, tenant_id: str, task_id: str, fence_token: int) -> None:
@@ -327,7 +334,7 @@ def update_task_status(
             f"execution_task {task_id!r} is not at revision {expected_revision} "
             f"under fence {fence_token!r} (stale lease, concurrent update, or wrong revision)"
         )
-    return dict(zip(_STATUS_COLUMNS, row))
+    return row_as_dict(_STATUS_COLUMNS, row)
 
 
 def append_observation(

@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 import psycopg
+from .rows import row_as_dict
 
 _QUOTE_COLUMNS = [
     "tenant_id", "id", "case_id", "content", "content_hash",
@@ -55,7 +56,7 @@ def create_quote_snapshot(
             total_amount_minor_units, total_currency, total_currency_scale_ref, expires_at,
         ),
     ).fetchone()
-    return dict(zip(_QUOTE_COLUMNS, row))
+    return row_as_dict(_QUOTE_COLUMNS, row)
 
 
 def get_quote_snapshot(conn: psycopg.Connection, *, tenant_id: str, quote_id: str) -> dict[str, Any] | None:
@@ -63,7 +64,7 @@ def get_quote_snapshot(conn: psycopg.Connection, *, tenant_id: str, quote_id: st
         f"SELECT {', '.join(_QUOTE_COLUMNS)} FROM quote_snapshot WHERE tenant_id = %s AND id = %s",
         (tenant_id, quote_id),
     ).fetchone()
-    return dict(zip(_QUOTE_COLUMNS, row)) if row is not None else None
+    return row_as_dict(_QUOTE_COLUMNS, row) if row is not None else None
 
 
 def create_order(
@@ -89,7 +90,7 @@ def create_order(
         """,
         (tenant_id, order_id, case_id, quote_id, total_amount_minor_units, total_currency, total_currency_scale_ref),
     ).fetchone()
-    return dict(zip(_ORDER_COLUMNS, row))
+    return row_as_dict(_ORDER_COLUMNS, row)
 
 
 def get_order(conn: psycopg.Connection, *, tenant_id: str, order_id: str) -> dict[str, Any] | None:
@@ -97,7 +98,7 @@ def get_order(conn: psycopg.Connection, *, tenant_id: str, order_id: str) -> dic
         f"SELECT {', '.join(_ORDER_COLUMNS)} FROM order_record WHERE tenant_id = %s AND id = %s",
         (tenant_id, order_id),
     ).fetchone()
-    return dict(zip(_ORDER_COLUMNS, row)) if row is not None else None
+    return row_as_dict(_ORDER_COLUMNS, row) if row is not None else None
 
 
 def update_order_supplier_booking(
@@ -128,4 +129,4 @@ def update_order_supplier_booking(
             tenant_id, order_id,
         ),
     ).fetchone()
-    return dict(zip(_ORDER_COLUMNS, row))
+    return row_as_dict(_ORDER_COLUMNS, row)

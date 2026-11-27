@@ -262,8 +262,7 @@ class FulfillmentService:
 
         if selected_option_id == "approve":
             expected_manifest = {"booking": "booking.create"}
-            actual_manifest = {item.get("item_id"): item.get("operation") for item in scope_manifest}
-            if actual_manifest != expected_manifest:
+            if len(scope_manifest) != 1 or {item.get("item_id"): item.get("operation") for item in scope_manifest} != expected_manifest:
                 raise WorkPhaseMismatchError("approval scope_manifest does not exactly bind booking.create")
             approval_id = _new_id()
             approval_repository.approve_decision(
@@ -319,7 +318,7 @@ class FulfillmentService:
 
     def dispatch_booking(
         self,
-        conn,
+        _conn,
         *,
         tenant_id: str,
         task_id: str,
@@ -393,7 +392,7 @@ class FulfillmentService:
     # -- 4. Reconcile a WAITING/UNKNOWN task via a read-only lookup -----------
 
     def reconcile_booking(
-        self, conn, *, tenant_id: str, task_id: str, holder: str, now: str, lease_seconds: float = 30,
+        self, _conn, *, tenant_id: str, task_id: str, holder: str, now: str, lease_seconds: float = 30,
     ) -> dict[str, Any]:
         # TX1 records a read-only reconciliation attempt. EXECUTING is
         # included for the crash-after-external-success recovery path.
@@ -405,7 +404,10 @@ class FulfillmentService:
                 return {"task": task, "outcome": "ALREADY_TERMINAL_NO_OP"}
             if task["status"] not in ("EXECUTING", "WAITING", "UNKNOWN"):
                 raise WorkPhaseMismatchError(f"execution_task {task_id} is {task['status']}, not EXECUTING/WAITING/UNKNOWN")
-            lease = execution_repository.acquire_lease(worker_conn, tenant_id=tenant_id, task_id=task_id, holder=holder, now=now, lease_until=_add_seconds(now, lease_seconds))
+            lease = execution_repository.acquire_lease(
+                worker_conn, tenant_id=tenant_id, task_id=task_id, holder=holder, now=now,
+                lease_until=_add_seconds(now, lease_seconds), allowed_statuses=("EXECUTING", "WAITING", "UNKNOWN"),
+            )
             if lease is None:
                 raise TaskLeaseContendedError(f"execution_task {task_id} lease is held by another worker")
             task = lease
@@ -447,6 +449,11 @@ class FulfillmentService:
         task = execution_repository.get_execution_task(conn, tenant_id=tenant_id, task_id=task_id)
         if task is None:
             raise TaskNotFoundError(f"no execution_task {task_id}")
+        if str(task["work_id"]) != str(work_id):
+            raise WorkPhaseMismatchError("execution_task does not belong to this Work")
+        work = work_repository.get_work(conn, tenant_id=tenant_id, work_id=work_id)
+        if work is None:
+            raise TaskNotFoundError(f"no work {work_id}")
         if task["status"] != "NEW":
             raise TaskAlreadyDispatchedError(
                 f"execution_task {task_id} is already {task['status']}; an already-dispatched or terminal action "
@@ -463,7 +470,6 @@ class FulfillmentService:
                 f"execution_task {task_id} moved to {current['status'] if current else '?'} "
                 "before this cancellation committed"
             )
-        work = work_repository.get_work(conn, tenant_id=tenant_id, work_id=work_id)
         work = work_repository.update_work_status(
             conn, tenant_id=tenant_id, work_id=work_id, expected_revision=work["revision"], new_status="CANCELLED",
             cancellation={"reason": reason},
@@ -519,12 +525,21 @@ class FulfillmentService:
             conn, tenant_id=tenant_id, event_id=event_id, connector_account_id=None, environment="MOCK",
             producer=producer, source_event_id=source_event_id, raw_hash=raw_hash, raw_payload=raw_payload,
         )
-        if inbox_result.outcome != outbox_inbox_repository.InboxOutcome.CREATED:
+        if inbox_result.outcome == outbox_inbox_repository.InboxOutcome.CONFLICT:
             return {"inbox_outcome": inbox_result.outcome, "applied": False}
+        if inbox_result.outcome == outbox_inbox_repository.InboxOutcome.DUPLICATE:
+            # A prior delivery may have recorded the inbox row but lost the
+            # lease race.  RECEIVED is deliberately replayable using the
+            # original row ID; PROCESSED is the normal duplicate no-op ACK.
+            if inbox_result.row is None or inbox_result.row["processing_status"] != "RECEIVED":
+                return {"inbox_outcome": inbox_result.outcome, "applied": False}
+            inbox_event_id = str(inbox_result.row["id"])
+        else:
+            inbox_event_id = event_id
 
         task = execution_repository.get_execution_task(conn, tenant_id=tenant_id, task_id=task_id)
         if task is None or task["status"] not in ("WAITING", "UNKNOWN"):
-            outbox_inbox_repository.mark_inbox_processed(conn, tenant_id=tenant_id, event_id=event_id, processed_at=now)
+            outbox_inbox_repository.mark_inbox_processed(conn, tenant_id=tenant_id, event_id=inbox_event_id, processed_at=now)
             return {
                 "inbox_outcome": inbox_result.outcome, "applied": False,
                 "task_status": task["status"] if task else None,
@@ -532,7 +547,7 @@ class FulfillmentService:
 
         lease = execution_repository.acquire_lease(
             conn, tenant_id=tenant_id, task_id=task_id, holder=f"webhook:{producer}", now=now,
-            lease_until=_add_seconds(now, 30),
+            lease_until=_add_seconds(now, 30), allowed_statuses=("WAITING", "UNKNOWN"),
         )
         if lease is None:
             # Leave the inbox RECEIVED: a scheduler can safely replay it once
@@ -545,17 +560,17 @@ class FulfillmentService:
             conn, tenant_id=tenant_id, attempt_id=attempt_id, task_id=task_id,
             attempt_no=execution_repository.next_attempt_no(conn, tenant_id=tenant_id, task_id=task_id),
             attempt_kind="VERIFY", fence_token=task["lease_fence_token"], request_hash=task["request_hash"],
-            started_at=now, request_ref=event_id,
+            started_at=now, request_ref=inbox_event_id,
         )
         if outcome == "CONFIRMED":
             execution_repository.append_observation(
                 conn, tenant_id=tenant_id, attempt_id=attempt_id, sequence=1, observed_at=now,
                 transport_result="RESPONSE_RECEIVED", outcome="SUCCEEDED", external_ref=external_ref,
-                evidence_ref=f"webhook:{event_id}",
+                evidence_ref=f"webhook:{inbox_event_id}",
             )
             result: dict[str, Any] = self._complete_booking(
                 conn, tenant_id=tenant_id, work_id=task["work_id"], task=task, external_ref=external_ref,
-                evidence_ref=f"webhook:{event_id}", now=now, fence_token=task["lease_fence_token"],
+                evidence_ref=f"webhook:{inbox_event_id}", now=now, fence_token=task["lease_fence_token"],
             )
             response = {"task": result["task"], "work": result["work"], "outcome": "SUCCEEDED"}
         elif outcome == "REJECTED":
@@ -573,7 +588,7 @@ class FulfillmentService:
             execution_repository.release_lease(conn, tenant_id=tenant_id, task_id=task_id, fence_token=task["lease_fence_token"])
             raise ValueError(f"unknown webhook outcome {outcome!r}")
 
-        outbox_inbox_repository.mark_inbox_processed(conn, tenant_id=tenant_id, event_id=event_id, processed_at=now)
+        outbox_inbox_repository.mark_inbox_processed(conn, tenant_id=tenant_id, event_id=inbox_event_id, processed_at=now)
         execution_repository.release_lease(conn, tenant_id=tenant_id, task_id=task_id, fence_token=task["lease_fence_token"])
         return {"inbox_outcome": inbox_result.outcome, "applied": True, **response}
 
@@ -601,6 +616,7 @@ class FulfillmentService:
             raise TaskLeaseContendedError(f"notification task {task['id']} is {task['status']}")
         lease = execution_repository.acquire_lease(
             conn, tenant_id=tenant_id, task_id=task["id"], holder=holder, now=now, lease_until=_add_seconds(now, 30),
+            allowed_statuses=("NEW", "FAILED"),
         )
         if lease is None:
             raise TaskLeaseContendedError(f"notification task {task['id']} lease is held by another worker")
@@ -657,9 +673,20 @@ class FulfillmentService:
         approval = approval_repository.get_approval_record(conn, tenant_id=tenant_id, approval_id=str(approval_id))
         if approval is None or approval["payload_hash"] != canonical_json.payload_hash(approval["approved_payload"]):
             raise WorkPhaseMismatchError("booking approval payload integrity check failed")
-        manifest = {item.get("item_id"): item.get("operation") for item in approval["scope_manifest"]}
-        if manifest != {"booking": "booking.create"}:
+        manifest = approval["scope_manifest"]
+        if len(manifest) != 1 or {item.get("item_id"): item.get("operation") for item in manifest} != {"booking": "booking.create"}:
             raise WorkPhaseMismatchError("booking approval scope no longer matches the task")
+        snapshot = task["request_snapshot"]
+        payload = approval["approved_payload"]
+        if str(approval["decision_id"]) != str(snapshot.get("decision_id")):
+            raise WorkPhaseMismatchError("booking approval decision does not match the task")
+        expected = {
+            "work_id": task["work_id"], "quote_id": snapshot.get("quote_id"),
+            "order_id": snapshot.get("order_id"), "session_id": snapshot.get("session_id"),
+            "party_size": snapshot.get("party_size"), "operation": task["operation"],
+        }
+        if any(str(payload.get(field)) != str(value) for field, value in expected.items()):
+            raise WorkPhaseMismatchError("booking approval payload no longer binds the task request")
 
     def _apply_dispatch_result(
         self, conn, *, tenant_id: str, work_id: str, task: dict[str, Any], attempt_id: str,

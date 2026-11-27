@@ -9,6 +9,7 @@ from typing import Any
 import psycopg
 
 from .errors import VersionConflict
+from .rows import row_as_dict
 from services.authorization import canonical_json
 from services.authorization.temporal import is_at_or_before
 
@@ -49,7 +50,7 @@ def get_decision_request(
             """,
             (tenant_id, decision_id),
         ).fetchone()
-    return dict(zip(_DECISION_COLUMNS, row)) if row is not None else None
+    return row_as_dict(_DECISION_COLUMNS, row) if row is not None else None
 
 
 def create_decision_request(
@@ -81,7 +82,7 @@ def create_decision_request(
         (
             tenant_id, decision_id, revision, work_id, decision_type, json.dumps(options),
             payload_hash, target_revision, expires_at, requested_role,
-            json.dumps(display_payload) if display_payload is not None else None,
+            json.dumps(display_payload, default=str) if display_payload is not None else None,
         ),
     )
 
@@ -132,9 +133,9 @@ def approve_decision(
         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'travel-canonical-json-v1', %s, %s, %s, %s)
         """,
         (
-            tenant_id, approval_id, decision_id, reviewed_revision, json.dumps(approved_by),
-            verified_actor_ref, json.dumps(approved_payload), policy_version, payload_hash,
-            json.dumps(scope_manifest), approved_at, expires_at,
+            tenant_id, approval_id, decision_id, reviewed_revision, json.dumps(approved_by, default=str),
+            verified_actor_ref, json.dumps(approved_payload, default=str), policy_version, payload_hash,
+            json.dumps(scope_manifest, default=str), approved_at, expires_at,
         ),
     )
 
@@ -144,7 +145,7 @@ def get_approval_record(conn: psycopg.Connection, *, tenant_id: str, approval_id
         f"SELECT {', '.join(_APPROVAL_COLUMNS)} FROM approval_record WHERE tenant_id = %s AND id = %s",
         (tenant_id, approval_id),
     ).fetchone()
-    return dict(zip(_APPROVAL_COLUMNS, row)) if row is not None else None
+    return row_as_dict(_APPROVAL_COLUMNS, row) if row is not None else None
 
 
 def approval_is_effective(
@@ -217,5 +218,5 @@ def revoke_approval(
         INSERT INTO approval_revocation (tenant_id, id, approval_id, revoked_by, reason, effective_at)
         VALUES (%s, %s, %s, %s, %s, %s)
         """,
-        (tenant_id, revocation_id, approval_id, json.dumps(revoked_by), reason, effective_at),
+        (tenant_id, revocation_id, approval_id, json.dumps(revoked_by, default=str), reason, effective_at),
     )
