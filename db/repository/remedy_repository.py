@@ -22,7 +22,9 @@ def record_remedy_notification(
     if existing is not None:
         if str(existing[0]) != str(remedy_action_id):
             raise IdempotencyConflict("notification key is already bound to another remedy action")
-        if existing[1] == state:
+        # Delivery is a terminal fact. A late retry/failure must never turn a
+        # successfully delivered notification back into a pending action.
+        if existing[1] == state or existing[1] == "DELIVERED":
             return
         conn.execute(
             "UPDATE remedy_notification SET state = %s, evidence = %s WHERE tenant_id = %s AND business_key = %s",
@@ -44,13 +46,26 @@ def resolve_complaint(
     """The only ENG-07 closeout command; remedy success never calls this."""
     if not resolution_reason.strip():
         raise ValueError("complaint resolution requires a reason")
+    if any(not isinstance(item, str) or not item.strip() for item in unresolved_items):
+        raise ValueError("unresolved_items must contain only non-empty descriptions")
+    if len(set(unresolved_items)) != len(unresolved_items):
+        raise ValueError("unresolved_items must not contain duplicates")
+    active_actions = conn.execute(
+        """SELECT count(*) FROM remedy_action
+             WHERE tenant_id = %s AND complaint_id = %s
+               AND state IN ('RESERVED', 'SUBMITTED', 'PENDING', 'UNKNOWN')""",
+        (tenant_id, complaint_id),
+    ).fetchone()[0]
+    if active_actions and not unresolved_items:
+        raise ValueError("unresolved_items must identify outstanding remedy actions before closeout")
     resolution = {"resolved_at": None, "resolution_reason": resolution_reason,
                   "unresolved_items": unresolved_items}
     if customer_responded is not None:
         resolution["customer_responded"] = customer_responded
     updated = conn.execute(
         """UPDATE complaint
-             SET status = 'RESOLVED', resolution = jsonb_set(%s::jsonb, '{resolved_at}', to_jsonb(clock_timestamp()::text))
+             SET status = 'RESOLVED', revision = revision + 1,
+                 resolution = jsonb_set(%s::jsonb, '{resolved_at}', to_jsonb(clock_timestamp()))
              WHERE tenant_id = %s AND id = %s AND status NOT IN ('RESOLVED', 'CLOSED')""",
         (json.dumps(resolution), tenant_id, complaint_id),
     )

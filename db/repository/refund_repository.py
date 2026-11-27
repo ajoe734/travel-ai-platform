@@ -24,7 +24,7 @@ from .rows import row_as_dict
 _REFUND_COLUMNS = [
     "tenant_id", "id", "payment_id", "operation", "business_key", "amount_minor_units",
     "currency", "currency_scale_ref", "state", "connector_account_id", "environment",
-    "provider_refund_id", "source_revision", "evidence", "created_at", "updated_at",
+    "provider_refund_id", "source_revision", "evidence", "remedy_action_id", "created_at", "updated_at",
 ]
 
 
@@ -38,6 +38,7 @@ def reserve_refund(
     amount_minor_units: int,
     currency: str,
     currency_scale_ref: str,
+    remedy_action_id: str | None = None,
 ) -> dict[str, Any]:
     """RESERVED-state refund row, drawing down Payment.reserved_amount_minor_units.
 
@@ -54,7 +55,7 @@ def reserve_refund(
         """
         SELECT tenant_id, id, payment_id, operation, business_key, amount_minor_units,
                currency, currency_scale_ref, state, connector_account_id, environment,
-               provider_refund_id, source_revision, evidence, created_at, updated_at
+               provider_refund_id, source_revision, evidence, remedy_action_id, created_at, updated_at
         FROM refund
         WHERE tenant_id = %s AND operation = 'refund' AND business_key = %s
         FOR UPDATE
@@ -68,6 +69,7 @@ def reserve_refund(
             or row["amount_minor_units"] != amount_minor_units
             or row["currency"] != currency
             or row["currency_scale_ref"] != currency_scale_ref
+            or str(row.get("remedy_action_id")) != str(remedy_action_id)
         ):
             raise IdempotencyConflict(
                 f"business_key {business_key!r} already reserved against a different payment/amount/currency"
@@ -94,13 +96,13 @@ def reserve_refund(
         """
         INSERT INTO refund
             (tenant_id, id, payment_id, operation, business_key, amount_minor_units, currency,
-             currency_scale_ref, state)
-        VALUES (%s, %s, %s, 'refund', %s, %s, %s, %s, 'RESERVED')
+             currency_scale_ref, remedy_action_id, state)
+        VALUES (%s, %s, %s, 'refund', %s, %s, %s, %s, %s, 'RESERVED')
         RETURNING tenant_id, id, payment_id, operation, business_key, amount_minor_units,
                   currency, currency_scale_ref, state, connector_account_id, environment,
-                  provider_refund_id, source_revision, evidence, created_at, updated_at
+                  provider_refund_id, source_revision, evidence, remedy_action_id, created_at, updated_at
         """,
-        (tenant_id, refund_id, payment_id, business_key, amount_minor_units, currency, currency_scale_ref),
+        (tenant_id, refund_id, payment_id, business_key, amount_minor_units, currency, currency_scale_ref, remedy_action_id),
     ).fetchone()
     return row_as_dict(_REFUND_COLUMNS, row)
 
@@ -210,11 +212,26 @@ def submit_refund_to_original_collector(
     if row is not None:
         return
     existing = conn.execute(
-        "SELECT state FROM refund WHERE tenant_id = %s AND id = %s", (tenant_id, refund_id)
+        """SELECT r.state, r.connector_account_id, r.environment, r.currency,
+                  p.collector_account, p.environment, p.currency
+             FROM refund AS r JOIN payment AS p ON p.tenant_id = r.tenant_id AND p.id = r.payment_id
+             WHERE r.tenant_id = %s AND r.id = %s FOR UPDATE""",
+        (tenant_id, refund_id),
     ).fetchone()
-    if existing is not None and existing[0] == "SUBMITTED":
-        return
-    raise RefundRouteMismatch("refund route must match the captured payment collector, environment and currency")
+    if existing is None:
+        raise ValueError("refund does not exist for this tenant")
+    state, submitted_connector, submitted_environment, refund_currency, payment_collector, payment_environment, payment_currency = existing
+    route_matches = (
+        collector_account == payment_collector and environment == payment_environment
+        and refund_currency == payment_currency
+    )
+    if state == "SUBMITTED":
+        if route_matches and str(submitted_connector) == str(connector_account_id) and submitted_environment == environment:
+            return
+        raise RefundRouteMismatch("refund replay route must match its captured payment and original submitted connector")
+    if not route_matches:
+        raise RefundRouteMismatch("refund route must match the captured payment collector, environment and currency")
+    raise ValueError(f"refund in state {state!r} cannot be submitted")
 
 
 def mark_refund_awaiting_reconciliation(

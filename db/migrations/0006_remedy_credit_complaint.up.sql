@@ -107,15 +107,20 @@ CREATE TABLE credit_grant (
     expires_at timestamptz NOT NULL,
     state text NOT NULL CHECK (state IN ('PENDING', 'UNKNOWN', 'ACTIVE', 'EXHAUSTED', 'EXPIRED', 'REVOKED', 'FAILED')),
     provider_grant_id text,
+    terminal_operation_key text,
     evidence jsonb,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, grant_operation_key),
+    UNIQUE (tenant_id, id, account_id, currency),
     FOREIGN KEY (tenant_id, account_id, currency) REFERENCES credit_account(tenant_id, id, currency),
     FOREIGN KEY (tenant_id, remedy_action_id) REFERENCES remedy_action(tenant_id, id),
     CONSTRAINT credit_grant_valid_period CHECK (expires_at > valid_from)
 );
+CREATE UNIQUE INDEX credit_grant_provider_dedupe
+    ON credit_grant (tenant_id, provider_grant_id)
+    WHERE provider_grant_id IS NOT NULL;
 CREATE TRIGGER credit_grant_set_updated_at BEFORE UPDATE ON credit_grant
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 ALTER TABLE credit_grant ENABLE ROW LEVEL SECURITY;
@@ -142,7 +147,8 @@ CREATE TABLE credit_ledger_entry (
     UNIQUE (tenant_id, business_key),
     UNIQUE (tenant_id, reversal_of),
     FOREIGN KEY (tenant_id, account_id, currency) REFERENCES credit_account(tenant_id, id, currency),
-    FOREIGN KEY (tenant_id, grant_id) REFERENCES credit_grant(tenant_id, id),
+    FOREIGN KEY (tenant_id, grant_id, account_id, currency)
+        REFERENCES credit_grant(tenant_id, id, account_id, currency),
     FOREIGN KEY (tenant_id, reversal_of) REFERENCES credit_ledger_entry(tenant_id, id),
     CONSTRAINT credit_ledger_reversal_requires_original CHECK (
         (entry_type = 'REDEEM_REVERSAL') = (reversal_of IS NOT NULL)
@@ -172,7 +178,8 @@ CREATE TABLE credit_usage_reservation (
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, redeem_operation_key),
     FOREIGN KEY (tenant_id, account_id, currency) REFERENCES credit_account(tenant_id, id, currency),
-    FOREIGN KEY (tenant_id, grant_id) REFERENCES credit_grant(tenant_id, id),
+    FOREIGN KEY (tenant_id, grant_id, account_id, currency)
+        REFERENCES credit_grant(tenant_id, id, account_id, currency),
     FOREIGN KEY (tenant_id, order_id) REFERENCES order_record(tenant_id, id)
 );
 CREATE TRIGGER credit_usage_reservation_set_updated_at BEFORE UPDATE ON credit_usage_reservation
