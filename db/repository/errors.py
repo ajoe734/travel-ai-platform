@@ -28,6 +28,14 @@ class InsufficientRefundBalance(RepositoryError):
     code = "INSUFFICIENT_REFUND_BALANCE"
 
 
+class InsufficientCreditBalance(RepositoryError):
+    code = "INSUFFICIENT_CREDIT_BALANCE"
+
+
+class CreditTermsRequired(RepositoryError):
+    code = "CREDIT_TERMS_REQUIRED"
+
+
 class CrossTenantReferenceRejected(RepositoryError):
     code = "CROSS_TENANT_REFERENCE_REJECTED"
 
