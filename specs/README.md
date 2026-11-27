@@ -46,3 +46,7 @@ publication projection、渠道使用權限、已知審核中與未知結果分�
 ENG-10 的實際產出在 [voice/](voice/README.md)：以 tenant-scoped Postgres 記錄 WebRTC、**SIP_TEST**、
 語音回合、改口中斷、驗證後接續、轉接實際結果、非同步音訊收件與安全付款連結交接。它不包含或宣稱
 已連通真實電信帳號；驗收與限制見 [voice/acceptance-trace.md](voice/acceptance-trace.md)。
+
+ENG-11 的實際產出在 [insights/](insights/README.md)：受控查詢結果的可重現洞察、證據與假說分離的
+商家提案／追問、缺口素材請求、掃描後的版本化素材權利及連至 ENG-08 ServiceVersion 的內容建構。它不
+包含真實 BI warehouse、防毒服務、媒體處理器或渠道帳號；驗收與限制見 [insights/acceptance-trace.md](insights/acceptance-trace.md)。

@@ -1,0 +1,7 @@
+BEGIN;
+DROP TRIGGER merchant_discussion_message_immutable ON merchant_discussion_message;
+DROP TRIGGER operating_insight_immutable ON operating_insight;
+ALTER TABLE proposal_asset_use DROP CONSTRAINT proposal_asset_use_grant_asset_fk;
+ALTER TABLE asset_rights_grant DROP CONSTRAINT asset_rights_grant_tenant_id_id_asset_id_unique;
+ALTER TABLE asset DROP CONSTRAINT asset_available_requires_checked, DROP CONSTRAINT asset_tenant_fk;
+COMMIT;
