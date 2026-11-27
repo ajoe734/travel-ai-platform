@@ -30,6 +30,14 @@ class MaterialRequestTests(unittest.TestCase):
         self.assertEqual(missing, [{"content_hash": "b", "purpose": "marketing", "channel": "ota", "language": "en"}])
         self.assertEqual(create.call_args.kwargs["required_items"], missing)
 
+    @patch("services.insights.service.repo.create_material_request")
+    @patch("services.insights.service.repo.find_usable_assets", return_value=[{"content_hash": "photo", "purpose": "marketing", "channel": "website", "language": "zh"}])
+    @patch("services.insights.service.repo.get_proposal", return_value={"required_material": [{"requirement_id": "hero", "purpose": "marketing", "channel": "ota", "language": "zh"}]})
+    def test_other_channel_asset_does_not_satisfy_material_requirement(self, proposal, assets, create):
+        missing = InsightService().ask_missing_material(None, tenant_id="t", proposal_id="p", requested_channels=["ota"], deadline=None, now="2026-01-01T00:00:00Z")
+        self.assertEqual(len(missing), 1)
+        create.assert_called_once()
+
 
 class AssetRightsTests(unittest.TestCase):
     @patch("services.insights.service.repo.get_asset", return_value={"source_scope": "COMPLAINT_EVIDENCE", "scan_status": "CHECKED"})
@@ -46,6 +54,15 @@ class AssetRightsTests(unittest.TestCase):
         self.assertEqual(result, {"id": "g"})
         self.assertEqual(scan.call_args.kwargs["lifecycle_status"], "AVAILABLE")
         self.assertEqual(grant.call_args.kwargs["revision"], 2)
+
+    @patch("services.insights.service.repo.get_asset", return_value={"lifecycle_status": "REVOKED"})
+    def test_scan_cannot_reopen_a_revoked_asset(self, asset):
+        with self.assertRaisesRegex(InsightError, "ASSET_SCAN_STATE_INVALID"):
+            InsightService().record_scan(None, tenant_id="t", asset_id="a", accepted=True)
+
+    def test_private_upload_url_is_rejected_before_persistence(self):
+        with self.assertRaisesRegex(InsightError, "ASSET_SOURCE_REF_UNSAFE"):
+            InsightService().ingest_asset(None, tenant_id="t", source_scope="MERCHANT_SUBMITTED", media_kind="IMAGE", source_ref="http://127.0.0.1/private", content_hash="a" * 64, metadata={})
 
 
 class ProposalToPublicationTests(unittest.TestCase):
@@ -69,6 +86,12 @@ class ProposalToPublicationTests(unittest.TestCase):
         self.assertEqual(outcome["service_version_id"], "version-1")
         self.assertEqual(outcome["publication_intents"], ["website", "ota"])
         self.assertEqual(publication.create_approved_version.call_args.kwargs["approval_id"], "approval-record")
+
+    @patch("services.insights.service.repo.revise_proposal", return_value={"revision": 2, "status": "DISCUSSING"})
+    def test_revising_proposal_invalidates_prepared_revision(self, revise):
+        result = InsightService().revise_proposal(None, tenant_id="t", proposal_id="p", expected_revision=1, content_diff={"title": "changed"}, cost_impact={"labor": "12"}, shared_resource_impact={"room": "shared"}, required_material=[])
+        self.assertEqual(result["revision"], 2)
+        self.assertEqual(revise.call_args.kwargs["expected_revision"], 1)
 
 
 if __name__ == "__main__":
