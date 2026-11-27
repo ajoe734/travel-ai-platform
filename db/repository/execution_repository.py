@@ -77,7 +77,12 @@ def create_execution_task(
         """,
         (
             tenant_id, task_id, work_id, kind, parent_task_id, operation, business_key,
-            request_hash, json.dumps(request_snapshot), postcondition_version, json.dumps(postcondition),
+            # A snapshot may carry identifiers read back by psycopg as
+            # uuid.UUID (for example notification order_id/work_id).  JSONB
+            # persists the canonical wire representation, never driver
+            # objects.
+            request_hash, json.dumps(request_snapshot, default=str), postcondition_version,
+            json.dumps(postcondition, default=str),
             deadline,
         ),
     ).fetchone()

@@ -339,6 +339,12 @@ class FulfillmentService:
             task = execution_repository.get_execution_task(worker_conn, tenant_id=tenant_id, task_id=task_id)
             if task is None:
                 raise TaskNotFoundError(f"no execution_task {task_id}")
+            if task["status"] == "CANCELLED":
+                # Cancellation won the shared NEW predicate before this
+                # worker recorded a dispatch intent.  This is an expected
+                # race result, not a phase error, and guarantees no attempt
+                # or connector write is appended after cancellation.
+                return {"task": task, "outcome": "CANCELLED_BEFORE_DISPATCH"}
             if task["status"] != "NEW":
                 raise WorkPhaseMismatchError(f"execution_task {task_id} is {task['status']}, not NEW")
             self._assert_dispatch_approval(worker_conn, tenant_id=tenant_id, task=task, now=now)
