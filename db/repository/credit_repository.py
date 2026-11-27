@@ -232,7 +232,8 @@ def reverse_credit_redemption(
                     (tenant_id, id, account_id, grant_id, entry_type, amount_minor_units, currency,
                      business_key, source_operation, reversal_of, occurred_at)
                 VALUES (%s, %s, %s, %s, 'REDEEM_REVERSAL', %s, %s, %s, %s, %s, clock_timestamp())
-                ON CONFLICT (tenant_id, reversal_of) DO NOTHING""",
+                ON CONFLICT (tenant_id, reversal_of) DO NOTHING
+                RETURNING reversal_of""",
                 (tenant_id, reversal_entry_id, account_id, grant_id, amount, currency, reversal_business_key,
                  json.dumps({"redemption_entry_id": str(redemption_entry_id)}), redemption_entry_id),
             ).fetchone()
