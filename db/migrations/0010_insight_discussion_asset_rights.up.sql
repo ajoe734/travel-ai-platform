@@ -1,4 +1,4 @@
--- ENG-11: reproducible operating observations, merchant discussion and media rights.
+-- ENG-11 migration 0010: reproducible operating observations, merchant discussion and media rights.
 -- Facts, hypotheses and a permission to use an asset deliberately remain separate.
 BEGIN;
 

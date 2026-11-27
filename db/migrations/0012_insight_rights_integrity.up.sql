@@ -1,4 +1,4 @@
--- ENG-11 forward fix: immutability and tenant/asset integrity for media rights.
+-- ENG-11 migration 0012 forward fix: immutability and tenant/asset integrity for media rights.
 BEGIN;
 
 ALTER TABLE asset

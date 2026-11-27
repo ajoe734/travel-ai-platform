@@ -1,4 +1,4 @@
--- ENG-11 forward fix: proposal, Work and insight must remain in the same Case.
+-- ENG-11 migration 0011 forward fix: proposal, Work and insight must remain in the same Case.
 BEGIN;
 ALTER TABLE work ADD CONSTRAINT work_tenant_id_case_id_unique UNIQUE (tenant_id, id, case_id);
 ALTER TABLE operating_insight ADD CONSTRAINT operating_insight_tenant_id_case_id_unique UNIQUE (tenant_id, id, case_id);
