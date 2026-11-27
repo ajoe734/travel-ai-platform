@@ -47,6 +47,11 @@ ENG-10 的實際產出在 [voice/](voice/README.md)：以 tenant-scoped Postgres
 語音回合、改口中斷、驗證後接續、轉接實際結果、非同步音訊收件與安全付款連結交接。它不包含或宣稱
 已連通真實電信帳號；驗收與限制見 [voice/acceptance-trace.md](voice/acceptance-trace.md)。
 
+ENG-12 的實際產出在 [billing/](billing/README.md)：版本化企業使用額度／超額費、訂單來源歸因、
+GMV 與平台收入分列的結算子帳、退款沖回，以及成功、未成交、失敗與人工補救的成本回流。可用
+`pytest tests/db/test_billing_settlement_cost.py -v` 驗證（需真實 PostgreSQL）；範圍與證據見
+[billing/acceptance-trace.md](billing/acceptance-trace.md)。
+
 ENG-11 的實際產出在 [insights/](insights/README.md)：受控查詢結果的可重現洞察、證據與假說分離的
 商家提案／追問、缺口素材請求、掃描後的版本化素材權利及連至 ENG-08 ServiceVersion 的內容建構。它不
 包含真實 BI warehouse、防毒服務、媒體處理器或渠道帳號；驗收與限制見 [insights/acceptance-trace.md](insights/acceptance-trace.md)。

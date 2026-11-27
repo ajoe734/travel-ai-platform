@@ -64,8 +64,8 @@ jobs:
           python3 db/migrate.py status
           # Keep this count aligned with the complete checked-in migration set.
           # ENG-10 owns 0006; ENG-08 owns 0007/0008; ENG-07 owns 0009;
-          # ENG-11 follows with 0010-0012 after integration reconciliation.
-          assert_applied_count 12
+          # ENG-11 owns 0010-0012; ENG-12 follows as 0013 after reconciliation.
+          assert_applied_count 13
           echo "::endgroup::"
 
           echo "::group::full rollback"
@@ -77,7 +77,7 @@ jobs:
           echo "::group::rebuild"
           python3 db/migrate.py upgrade
           python3 db/migrate.py status
-          assert_applied_count 12
+          assert_applied_count 13
           echo "::endgroup::"
 
   db-repository-tests:

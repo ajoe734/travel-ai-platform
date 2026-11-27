@@ -158,7 +158,10 @@ def _make_work(conn: psycopg.Connection, tenant_id: str, case_id: str) -> str:
     return work_id
 
 
-def _make_payment_chain(conn: psycopg.Connection, tenant_id: str, case_id: str, *, captured_amount: int) -> dict:
+def _make_payment_chain(
+    conn: psycopg.Connection, tenant_id: str, case_id: str, *, captured_amount: int,
+    currency: str = "TWD", currency_scale_ref: str = "iso4217-minor-unit-2",
+) -> dict:
     """quote_snapshot -> order_record -> payment, enough to exercise refund_repository."""
     quote_id = str(uuid.uuid4())
     order_id = str(uuid.uuid4())
@@ -169,27 +172,27 @@ def _make_payment_chain(conn: psycopg.Connection, tenant_id: str, case_id: str, 
             INSERT INTO quote_snapshot
                 (tenant_id, id, case_id, content, content_hash, total_amount_minor_units,
                  total_currency, total_currency_scale_ref)
-            VALUES (%s, %s, %s, '{}'::jsonb, %s, %s, 'TWD', 'iso4217-minor-unit-2')
+            VALUES (%s, %s, %s, '{}'::jsonb, %s, %s, %s, %s)
             """,
-            (tenant_id, quote_id, case_id, sha256_hex(quote_id), str(captured_amount)),
+            (tenant_id, quote_id, case_id, sha256_hex(quote_id), str(captured_amount), currency, currency_scale_ref),
         )
         conn.execute(
             """
             INSERT INTO order_record
                 (tenant_id, id, case_id, quote_id, status, total_amount_minor_units, total_currency,
                  total_currency_scale_ref, supplier_booking_status, payment_status)
-            VALUES (%s, %s, %s, %s, 'CONFIRMED', %s, 'TWD', 'iso4217-minor-unit-2', 'CONFIRMED', 'CAPTURED')
+            VALUES (%s, %s, %s, %s, 'CONFIRMED', %s, %s, %s, 'CONFIRMED', 'CAPTURED')
             """,
-            (tenant_id, order_id, case_id, quote_id, str(captured_amount)),
+            (tenant_id, order_id, case_id, quote_id, str(captured_amount), currency, currency_scale_ref),
         )
         conn.execute(
             """
             INSERT INTO payment
                 (tenant_id, id, order_id, collector_account, environment, currency, currency_scale_ref,
                  captured_amount_minor_units)
-            VALUES (%s, %s, %s, 'mock-collector', 'MOCK', 'TWD', 'iso4217-minor-unit-2', %s)
+            VALUES (%s, %s, %s, 'mock-collector', 'MOCK', %s, %s, %s)
             """,
-            (tenant_id, payment_id, order_id, captured_amount),
+            (tenant_id, payment_id, order_id, currency, currency_scale_ref, captured_amount),
         )
     return {"quote_id": quote_id, "order_id": order_id, "payment_id": payment_id}
 
@@ -208,7 +211,8 @@ def work_factory(conn):
 
 @pytest.fixture()
 def payment_chain_factory(conn):
-    """Callable(tenant_id, case_id, captured_amount=...) -> {quote_id, order_id, payment_id}."""
-    return lambda tenant_id, case_id, captured_amount: _make_payment_chain(
-        conn, tenant_id, case_id, captured_amount=captured_amount
+    """Callable(tenant_id, case_id, captured_amount, currency=..., scale=...) -> payment chain."""
+    return lambda tenant_id, case_id, captured_amount, currency="TWD", currency_scale_ref="iso4217-minor-unit-2": _make_payment_chain(
+        conn, tenant_id, case_id, captured_amount=captured_amount, currency=currency,
+        currency_scale_ref=currency_scale_ref,
     )
