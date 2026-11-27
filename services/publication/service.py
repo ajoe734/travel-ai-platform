@@ -65,7 +65,11 @@ def _assert_approval_integrity(conn: Any, *, tenant_id: str, approval_id: str, n
                                base_version: int | None = None, channel: str | None = None,
                                account: str | None = None) -> None:
     """Bind every publication command to the immutable approved content/scope."""
-    from db.repository import approval_repository
+    # Resolve the persistence boundary at call time.  Besides avoiding a DB
+    # import for pure result mapping, this ensures a test/adapter can replace
+    # the repository module without a stale package attribute bypassing it.
+    import importlib
+    approval_repository = importlib.import_module("db.repository.approval_repository")
     approval = approval_repository.get_approval_record(conn, tenant_id=tenant_id, approval_id=approval_id)
     if approval is None or not approval_repository.approval_is_effective(
         conn, tenant_id=tenant_id, approval_id=approval_id, now=now

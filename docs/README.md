@@ -13,6 +13,7 @@
 | 既有研究 | [研究索引](research/README.md) | 11/20–21 主報告文字轉存；歷史交付主張另核對 |
 | 工程契約 | [取得狀態](../specs/README.md) | 區分主文摘要與尚未取得的獨立機器契約 |
 | 開發協作 | [交接](collaboration/herdr-handoff.md)、[任務](collaboration/backlog.md) | 開始方式、分工、依賴及驗收 |
+| 部署與營運 | [Ops 索引](ops/README.md) | ENG-09 的資料庫基線、觀測、復原與驗收對照 |
 | 原檔來源 | [匯入紀錄](provenance/README.md) | 12 原檔、SHA-256、抽文檢查及缺少附件 |
 | 驗證 | [驗證說明](verification/README.md) | 原型檢查、本次實際執行範圍及未測試事項 |
 

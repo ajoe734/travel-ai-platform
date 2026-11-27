@@ -3,3 +3,4 @@
 # pip-installed locally -- see db/README.md "本機無法執行的部分".
 psycopg[binary]==3.2.3
 pytest==8.3.4
+jsonschema==4.23.0

@@ -19,6 +19,17 @@ jobs:
         run: python3 scripts/validate_repository.py
       - name: Check prototype state transitions in Node VM
         run: node tests/prototype-regression.cjs
+      - name: Install verification dependencies
+        run: |
+          python3 -m venv .venv
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+          .venv/bin/pip install -r db/requirements.txt
+      - name: ENG-09 secret hygiene and unit regression
+        run: |
+          python3 scripts/eng09_preflight.py --env-file .env.example --example
+          python3 scripts/check_secret_hygiene.py
+          python3 -m pytest tests --ignore=tests/db -v
+          node tests/workbench_frontend_test.cjs
 
   db-migration-lifecycle:
     runs-on: ubuntu-24.04
