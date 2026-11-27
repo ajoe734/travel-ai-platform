@@ -145,7 +145,6 @@ CREATE TABLE operational_cost_record (
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, business_key),
-    UNIQUE NULLS NOT DISTINCT (tenant_id, provider_usage_ref),
     FOREIGN KEY (tenant_id, case_id) REFERENCES case_record(tenant_id, id),
     FOREIGN KEY (tenant_id, order_id) REFERENCES order_record(tenant_id, id),
     CONSTRAINT operational_cost_amount_shape CHECK (
@@ -164,5 +163,9 @@ CREATE POLICY operational_cost_record_tenant_isolation ON operational_cost_recor
     USING (tenant_id = current_setting('app.tenant_id', true)::uuid)
     WITH CHECK (tenant_id = current_setting('app.tenant_id', true)::uuid);
 GRANT SELECT, INSERT ON operational_cost_record TO app_role;
+
+CREATE UNIQUE INDEX operational_cost_provider_usage_dedupe
+    ON operational_cost_record (tenant_id, provider_usage_ref)
+    WHERE provider_usage_ref IS NOT NULL;
 
 COMMIT;
