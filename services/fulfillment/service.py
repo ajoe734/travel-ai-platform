@@ -243,7 +243,12 @@ class FulfillmentService:
         decision = approval_repository.get_decision_request(conn, tenant_id=tenant_id, decision_id=decision_id)
         if decision is None:
             raise TaskNotFoundError(f"no decision {decision_id}")
-        if str(decision["work_id"]) != work_id:
+        # psycopg returns UUID columns as uuid.UUID while the public command
+        # boundary accepts the stable string ID returned by accept_order.
+        # Compare the canonical wire representation on both sides: this keeps
+        # the Work binding check in place instead of treating a driver type
+        # difference as a cross-Work decision.
+        if str(decision["work_id"]) != str(work_id):
             raise WorkPhaseMismatchError("decision does not belong to this Work")
         if decision["status"] != "PENDING" or decision["revision"] != expected_revision:
             raise WorkPhaseMismatchError("decision is no longer the requested pending revision")

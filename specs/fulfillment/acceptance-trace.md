@@ -33,6 +33,12 @@
 | F5 webhook fence、通知重試 | `process_booking_webhook`、`send_notification` | 舊版 webhook 使用舊 fence，通知固定 attempt=1 且 DONE 會重送；現 webhook 套用前取得 lease/fence，通知 DONE no-op、retry 使用 next attempt number | `python3 -m py_compile ...` exit 0 | 尚缺 applied=True、same source ID different payload、notification retry 的 DB 例 |
 | F2 外部 I/O transaction boundary | `FulfillmentService._worker_transaction`、`dispatch_booking`、`reconcile_booking`；`test_crash_after_external_success_recovers_executing_intent_via_lookup` | 舊版在 caller tenant transaction 內 claim/attempt 後直接 connector I/O，外部成功與本地 rollback 會回到 NEW。新版以 fresh worker connection 提交 TX1 `EXECUTING` + `DISPATCH` attempt，交易外呼叫 connector，再以 fresh TX2 保存結果；若 TX2 前崩潰，`EXECUTING` 在 lease 過期後只能 lookup，不可重送。 | `python3 -m py_compile services/fulfillment/service.py tests/db/test_fulfillment_workflow.py` exit 0；`pytest tests/db/test_fulfillment_workflow.py::test_crash_after_external_success_recovers_executing_intent_via_lookup -v` 待 hosted PostgreSQL | 本機無 psycopg/PostgreSQL，尚未讀到本 SHA 的 hosted run；外部邊界是 `ExperienceReservationMock`，未涵蓋真實供應商 |
 
+## R2 CI 退修紀錄（candidate `9aebed8a`）
+
+| Finding／驗收項 | 原始碼依據與修改位置 | 舊版重現 → 修正版結果 | 命令、退出碼、執行版本與證據位置 | 未驗項與具體限制 |
+| --- | --- | --- | --- | --- |
+| Hosted DB：合法 Work 綁定被錯拒 | `FulfillmentService.approve_consent` 的 DecisionRequest `work_id` 比對 | `9aebed8a` 在 GitHub Actions run `45981333112` 的 `pytest tests/db -v` 中，所有 9 個 ENG-05 workflow 測試都因 `str(decision["work_id"]) != work_id`（psycopg `UUID` 對 API string）誤拋 `WORK_PHASE_MISMATCH`；修正版以 `str()` 正規化兩側後仍要求相同 canonical Work ID，沒有移除 tenant／Work 歸屬檢查。 | 最小正式重現：`pytest tests/db/test_fulfillment_workflow.py::test_normal_completion_has_real_completion_evidence -v`；舊候選由 hosted run 失敗（9 failed, 10 passed）。本機無 psycopg/PostgreSQL，修正版須等待下一個 hosted `db-repository-tests`。 | 本機只能跑語法與非 DB 回歸；hosted DB run 尚未產生 |
+
 ## 本機靜態驗證（已實跑，非假設）
 
 ```text
