@@ -197,10 +197,14 @@ def test_reverse_credit_redemption_business_key_races_preserve_outer_transaction
     account_id = _account(conn, tenant_a)
     first_grant = _grant(conn, tenant_a, account_id, key="reverse-race-first")
     second_grant = _grant(conn, tenant_a, account_id, key="reverse-race-second")
+    same_race_grant = _grant(conn, tenant_a, account_id, key="reverse-race-same-key")
+    conflict_race_grant = _grant(conn, tenant_a, account_id, key="reverse-race-conflict-key")
     order_id = payment_chain_factory(tenant_a, case_factory(tenant_a), 200)["order_id"]
     redemption_ids = []
     for grant, operation_key in ((first_grant, "reverse-race-redeem-1"),
-                                 (second_grant, "reverse-race-redeem-2")):
+                                 (second_grant, "reverse-race-redeem-2"),
+                                 (same_race_grant, "reverse-race-redeem-3"),
+                                 (conflict_race_grant, "reverse-race-redeem-4")):
         with repo_db.tenant_transaction(conn, tenant_a):
             usage = credit_repository.reserve_credit_usage(
                 conn, tenant_id=tenant_a, reservation_id=str(uuid.uuid4()), account_id=account_id,
@@ -234,13 +238,15 @@ def test_reverse_credit_redemption_business_key_races_preserve_outer_transaction
             )
         assert conn.execute("SELECT 1").fetchone() == (1,)
 
+    # Use a redemption with no prior reversal: the sequential contract probe
+    # above already bound redemption_ids[0] to another key.
     # Same redemption/key is idempotent even when both outer transactions race.
     same_key = "reverse-race-idempotent"
     same_results = [None, None]
     same_barrier = threading.Barrier(2)
     same_threads = [
         threading.Thread(target=_reverse_credit_in_thread, args=(
-            app_database_url, tenant_a, redemption_ids[0], same_key, same_barrier, same_results, index,
+            app_database_url, tenant_a, redemption_ids[2], same_key, same_barrier, same_results, index,
         ))
         for index in range(2)
     ]
@@ -260,7 +266,7 @@ def test_reverse_credit_redemption_business_key_races_preserve_outer_transaction
             app_database_url, tenant_a, redemption_id, conflicting_key, conflict_barrier,
             conflict_results, index,
         ))
-        for index, redemption_id in enumerate(redemption_ids)
+        for index, redemption_id in enumerate(redemption_ids[2:4])
     ]
     for thread in conflict_threads:
         thread.start()
