@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 import psycopg
+from .rows import row_as_dict
 
 
 def create_case(
@@ -49,7 +50,7 @@ def get_case(conn: psycopg.Connection, *, tenant_id: str, case_id: str) -> dict[
         "tenant_id", "id", "revision", "case_type", "status", "demand_revision",
         "owner_revision", "current_owner", "next_step", "created_at", "updated_at",
     ]
-    return dict(zip(columns, row))
+    return row_as_dict(columns, row)
 
 
 def take_over_ownership(

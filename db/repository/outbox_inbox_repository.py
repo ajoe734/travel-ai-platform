@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 import psycopg
+from .rows import row_as_dict
 
 _INBOX_COLUMNS = [
     "tenant_id", "id", "connector_account_id", "environment", "producer", "source_event_id",
@@ -43,7 +44,7 @@ def append_outbox_event(
         """,
         (
             tenant_id, event_id, aggregate_type, aggregate_id, sequence, event_type, schema_version,
-            causation_id, correlation_id, resource_revision, json.dumps(payload), occurred_at,
+            causation_id, correlation_id, resource_revision, json.dumps(payload, default=str), occurred_at,
         ),
     )
 
@@ -98,7 +99,7 @@ def record_inbound_event(
         (tenant_id, connector_account_id, environment, producer, source_event_id),
     ).fetchone()
     if existing is not None:
-        row = dict(zip(_INBOX_COLUMNS, existing))
+        row = row_as_dict(_INBOX_COLUMNS, existing)
         if row["raw_hash"] == raw_hash:
             return InboxOutcome(InboxOutcome.DUPLICATE, row)
         conn.execute(
@@ -106,7 +107,7 @@ def record_inbound_event(
             INSERT INTO inbox_event_conflict (tenant_id, id, inbox_event_id, conflicting_hash, conflicting_payload)
             VALUES (%s, %s, %s, %s, %s)
             """,
-            (tenant_id, event_id, row["id"], raw_hash, json.dumps(raw_payload)),
+            (tenant_id, event_id, row["id"], raw_hash, json.dumps(raw_payload, default=str)),
         )
         conn.execute(
             "UPDATE inbox_event SET processing_status = 'QUARANTINED' WHERE tenant_id = %s AND id = %s",
@@ -122,6 +123,22 @@ def record_inbound_event(
         RETURNING tenant_id, id, connector_account_id, environment, producer, source_event_id,
                   raw_hash, raw_payload, received_at, processing_status, processed_at
         """,
-        (tenant_id, event_id, connector_account_id, environment, producer, source_event_id, raw_hash, json.dumps(raw_payload)),
+        (tenant_id, event_id, connector_account_id, environment, producer, source_event_id, raw_hash, json.dumps(raw_payload, default=str)),
     ).fetchone()
-    return InboxOutcome(InboxOutcome.CREATED, dict(zip(_INBOX_COLUMNS, row)))
+    return InboxOutcome(InboxOutcome.CREATED, row_as_dict(_INBOX_COLUMNS, row))
+
+
+def mark_inbox_processed(conn: psycopg.Connection, *, tenant_id: str, event_id: str, processed_at: str) -> None:
+    """RECEIVED -> PROCESSED once the event has actually been applied to a
+    task/order. A QUARANTINED row is never touched by this (its application
+    was refused, not completed), and a second call against an
+    already-PROCESSED row is a harmless no-op (its WHERE clause matches zero
+    rows), matching the duplicate-webhook replay path."""
+    conn.execute(
+        """
+        UPDATE inbox_event
+        SET processing_status = 'PROCESSED', processed_at = %s
+        WHERE tenant_id = %s AND id = %s AND processing_status = 'RECEIVED'
+        """,
+        (processed_at, tenant_id, event_id),
+    )
