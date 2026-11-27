@@ -16,7 +16,9 @@ closeout commit 是待交審的新 candidate，SHA 與 hosted run 由 handoff ma
 | 舊事件不覆蓋新版 | `test_late_v1_readback_cannot_overwrite_real_newer_live_publication` 以 production `has_newer_live_publication` SQL join 建立 v2 LIVE，再送 v1 成功 readback | 舊事件不應把 v1 推到 LIVE；新 DB 測試 assert SQL 回 true、v1 維持 PENDING 與 revision 不變 | py_compile exit 0；hosted `db-repository-tests` 待新 candidate | 本機無 PostgreSQL |
 | 前輪既有 migration/DB 證據 | `0007_service_version_publication` + `0008_publication_dispatch_claim`；workflow count 8 | 舊 migration collision 已解；基線 candidate 的 hosted CI 完成 0→8→0→8 及 repository suite | GitHub Actions run `45990635589`（SHA `4944cfff`）：validate、db-migration-lifecycle、db-repository-tests 全綠，**36 passed** | 此 run 不涵蓋本輪新測試；不可當作新 candidate green |
 
-本機已完成：`python3 -m unittest tests.publication_service_test -v`（14 passed）、
-`python3 -m py_compile services/publication/service.py tests/publication_service_test.py tests/db/test_publication_workflow.py`
-（exit 0）與 `git diff --check`（exit 0）。交審前仍需跑完整 unittest、repository validation 與
-hosted PostgreSQL migration/repository checks；真實 OTA/PMS、browser 和 worker scheduler 不屬本候選驗證。
+本機已完成：`python3 -m unittest tests.publication_service_test -v`（15 passed）、
+`python3 -m unittest discover -s tests -p '*_test.py' -v`（172 passed）、
+`python3 scripts/validate_repository.py`（passed）、
+`python3 -m py_compile services/publication/service.py db/repository/publication_repository.py tests/publication_service_test.py tests/db/test_publication_workflow.py`
+（exit 0）與 `git diff HEAD^ HEAD --check`（exit 0）。新的 candidate 仍須由 hosted PostgreSQL
+migration/repository checks 驗證；真實 OTA/PMS、browser 和 worker scheduler 不屬本候選驗證。
