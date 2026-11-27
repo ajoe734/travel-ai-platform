@@ -1,0 +1,6 @@
+BEGIN;
+ALTER TABLE change_proposal DROP CONSTRAINT change_proposal_insight_case_fk;
+ALTER TABLE change_proposal DROP CONSTRAINT change_proposal_work_case_fk;
+ALTER TABLE operating_insight DROP CONSTRAINT operating_insight_tenant_id_case_id_unique;
+ALTER TABLE work DROP CONSTRAINT work_tenant_id_case_id_unique;
+COMMIT;
