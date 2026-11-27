@@ -2,7 +2,9 @@
 """Formal publication-command boundary tests for ENG-08."""
 from __future__ import annotations
 import unittest
-from connectors.types import Pending, Succeeded
+from connectors.mocks.ota_delayed_publication import OtaDelayedPublicationMock
+from connectors.mocks.pms_nightly import PmsNightlyMock
+from connectors.types import Failed, Pending, Succeeded, SideEffectDisposition
 from services.publication.service import PublicationService
 
 class _Repo:
@@ -45,8 +47,51 @@ class ResultSafetyTest(unittest.TestCase):
         with patch("services.publication.service.publications.get_publication", return_value=repo.row), patch("services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw) as observe:
             row=svc.record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1,
                 result=Succeeded(external_reference="x", data={}, evidence_refs=("evidence-1",), observed_at="2026-11-27T00:00:00Z", source_revision="1"), now="2026-11-27T00:00:00Z")
-        self.assertEqual(row["status"], "FAILED")
-        self.assertEqual(row["failure_reason"], "STALE_CHANNEL_READBACK")
+        self.assertEqual(row, repo.row)
+        observe.assert_not_called()
+
+    def test_stale_readback_does_not_brick_new_version_then_matching_readback_lives(self):
+        """Round-2 F3 probe: old v1 evidence cannot terminally fail desired v2."""
+        from unittest.mock import patch
+        current = {"revision": 1, "desired_version": 2, "status": "PENDING", "external_reference": "ota-2"}
+        svc = PublicationService()
+        stale = Succeeded("ota-2", {}, ("old-evidence",), "2026-11-27T00:00:00Z", source_revision="1")
+        fresh = Succeeded("ota-2", {}, ("new-evidence",), "2026-11-27T00:00:01Z", source_revision="2")
+        with patch("services.publication.service.publications.get_publication", return_value=current), patch(
+            "services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw
+        ) as observe:
+            self.assertEqual(svc.record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1, result=stale, now="now"), current)
+            saved = svc.record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1, result=fresh, now="now")
+        self.assertEqual(saved["status"], "LIVE")
+        self.assertEqual(observe.call_count, 1)
+
+    def test_rejected_ota_reconcile_maps_failed_without_missing_external_reference(self):
+        """Round-2 F2 probe: Failed intentionally has no external_reference field."""
+        from unittest.mock import patch
+        ota = OtaDelayedPublicationMock()
+        dispatch = ota.submit_publication("tenant-a", "publication:1", "ota", "2", "2026-11-27T00:00:00Z")
+        ota.advance_review("tenant-a", "publication:1", "REJECTED")
+        rejected = ota.reconcile("tenant-a", "publication:1", dispatch.reconciliation_token, "2026-11-27T00:01:00Z")
+        self.assertIsInstance(rejected, Failed)
+        current = {"revision": 2, "desired_version": 2, "status": "PENDING", "external_reference": dispatch.external_reference}
+        with patch("services.publication.service.publications.get_publication", return_value=current), patch(
+            "services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw
+        ):
+            saved = PublicationService().record_connector_result(None, tenant_id="tenant-a", publication_id="p", expected_revision=2, result=rejected, now="now")
+        self.assertEqual(saved["status"], "FAILED")
+        self.assertIn("rejected", saved["failure_reason"])
+
+    def test_unknown_preserves_optional_external_reference(self):
+        from unittest.mock import patch
+        from connectors.types import Unknown
+        current = {"revision": 1, "desired_version": 2, "status": "PENDING", "external_reference": "ota-2"}
+        unknown = Unknown("recon", "NETWORK", "evidence", "now", external_reference="ota-2")
+        with patch("services.publication.service.publications.get_publication", return_value=current), patch(
+            "services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw
+        ):
+            saved = PublicationService().record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1, result=unknown, now="now")
+        self.assertEqual(saved["status"], "UNKNOWN")
+        self.assertEqual(saved["external_reference"], "ota-2")
 
     def test_known_pending_is_not_unknown(self):
         from unittest.mock import patch
@@ -100,5 +145,21 @@ class PublicationPreparationTest(unittest.TestCase):
         self.assertEqual(blocked[0]["status"], "BLOCKED")
         self.assertEqual(blocked[0]["failure_reason"], "CHANNEL_AUTHORIZATION_EXPIRED")
         self.assertEqual(record_block.call_args.kwargs["publication_id"], "ota-publication")
+
+    def test_unsupported_pms_is_blocked_before_dispatch(self):
+        from unittest.mock import patch
+        pms = PmsNightlyMock({})
+        publication = {"id": "pms-publication", "revision": 1, "status": "NOT_STARTED"}
+        with patch("services.publication.service.uuid.uuid4", return_value="pms-publication"), patch(
+            "services.publication.service.publications.create_publication", return_value=publication
+        ), patch("services.publication.service.publications.get_channel_access", return_value={"publication_enabled": True, "reason": None}), patch(
+            "services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw
+        ):
+            intents, blocked = PublicationService().prepare_publications(None, tenant_id="t", service_version_id="v", service_version=2,
+                targets=[{"channel": "pms", "connector_account_id": "pms", "environment": "MOCK"}],
+                connectors={("pms", "pms", "MOCK"): pms})
+        self.assertEqual(intents, [])
+        self.assertEqual(blocked[0]["status"], "BLOCKED")
+        self.assertEqual(pms.publication_call_count, 0)
 
 if __name__ == "__main__": unittest.main()

@@ -4,17 +4,20 @@
 BEGIN;
 
 CREATE TABLE service_version (
-    tenant_id uuid NOT NULL,
+    tenant_id uuid NOT NULL REFERENCES tenant(id),
     id uuid NOT NULL,
     service_id uuid NOT NULL,
     version integer NOT NULL CHECK (version >= 1),
     content jsonb NOT NULL,
     content_hash text NOT NULL CHECK (content_hash ~ '^[0-9a-f]{64}$'),
-    approval_id uuid,
+    base_version integer,
+    change_diff jsonb NOT NULL,
+    approval_id uuid NOT NULL,
     approved_at timestamptz NOT NULL,
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, service_id, version),
+    UNIQUE (tenant_id, id, version),
     FOREIGN KEY (tenant_id, approval_id) REFERENCES approval_record(tenant_id, id)
 );
 CREATE TRIGGER service_version_immutable BEFORE UPDATE OR DELETE ON service_version
@@ -29,7 +32,7 @@ GRANT SELECT, INSERT ON service_version TO app_role;
 -- Access is a separate, explicit projection. Connector capability alone is
 -- not permission to publish (AGENTS.md execution invariants).
 CREATE TABLE channel_publication_access (
-    tenant_id uuid NOT NULL,
+    tenant_id uuid NOT NULL REFERENCES tenant(id),
     channel text NOT NULL,
     connector_account_id text NOT NULL,
     environment text NOT NULL CHECK (environment IN ('PRODUCTION','SANDBOX','MOCK')),
@@ -49,7 +52,7 @@ CREATE POLICY channel_publication_access_tenant_isolation ON channel_publication
 GRANT SELECT, INSERT, UPDATE ON channel_publication_access TO app_role;
 
 CREATE TABLE channel_publication (
-    tenant_id uuid NOT NULL,
+    tenant_id uuid NOT NULL REFERENCES tenant(id),
     id uuid NOT NULL,
     service_version_id uuid NOT NULL,
     channel text NOT NULL,
@@ -70,9 +73,16 @@ CREATE TABLE channel_publication (
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, service_version_id, channel, connector_account_id, environment),
     UNIQUE (tenant_id, business_key),
-    FOREIGN KEY (tenant_id, service_version_id) REFERENCES service_version(tenant_id, id),
+    FOREIGN KEY (tenant_id, service_version_id, desired_version)
+        REFERENCES service_version(tenant_id, id, version),
     CONSTRAINT publication_pending_has_submission CHECK (
-      status NOT IN ('PENDING','UNKNOWN','LIVE') OR submitted_version IS NOT NULL
+      status <> 'PENDING' OR (submitted_version IS NOT NULL AND external_reference IS NOT NULL AND reconciliation_token IS NOT NULL)
+    ),
+    CONSTRAINT publication_unknown_has_reconciliation CHECK (
+      status <> 'UNKNOWN' OR reconciliation_token IS NOT NULL
+    ),
+    CONSTRAINT publication_terminal_failure_has_reason CHECK (
+      status NOT IN ('FAILED','BLOCKED') OR failure_reason IS NOT NULL
     ),
     CONSTRAINT publication_live_is_readback CHECK (
       status <> 'LIVE' OR (observed_version = desired_version AND observed_at IS NOT NULL AND external_reference IS NOT NULL)

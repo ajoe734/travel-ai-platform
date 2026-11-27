@@ -19,12 +19,23 @@ _PUBLICATION_COLUMNS = [
 ]
 
 def create_service_version(conn: Any, *, tenant_id: str, version_id: str, service_id: str,
-                           version: int, content: dict[str, Any], content_hash: str, approval_id: str | None,
-                           approved_at: str) -> None:
+                           version: int, base_version: int | None, content: dict[str, Any], change_diff: dict[str, Any],
+                           content_hash: str, approval_id: str, approved_at: str) -> None:
     conn.execute("""INSERT INTO service_version
-      (tenant_id,id,service_id,version,content,content_hash,approval_id,approved_at)
-      VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
-      (tenant_id, version_id, service_id, version, json.dumps(content, default=str), content_hash, approval_id, approved_at))
+      (tenant_id,id,service_id,version,base_version,content,change_diff,content_hash,approval_id,approved_at)
+      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+      (tenant_id, version_id, service_id, version, base_version, json.dumps(content, default=str),
+       json.dumps(change_diff, default=str), content_hash, approval_id, approved_at))
+
+def get_service_version(conn: Any, *, tenant_id: str, service_version_id: str) -> dict[str, Any] | None:
+    columns = ["tenant_id", "id", "service_id", "version", "base_version", "content", "change_diff", "content_hash", "approval_id", "approved_at"]
+    row = conn.execute("SELECT " + ", ".join(columns) + " FROM service_version WHERE tenant_id=%s AND id=%s", (tenant_id, service_version_id)).fetchone()
+    return row_as_dict(columns, row) if row else None
+
+def publication_summary(conn: Any, *, tenant_id: str, service_version_id: str) -> dict[str, int]:
+    rows = conn.execute("""SELECT status, count(*) FROM channel_publication
+        WHERE tenant_id=%s AND service_version_id=%s GROUP BY status""", (tenant_id, service_version_id)).fetchall()
+    return {status: count for status, count in rows}
 
 def set_channel_access(conn: Any, *, tenant_id: str, channel: str, connector_account_id: str,
                        environment: str, publication_enabled: bool, reason: str | None) -> None:
@@ -65,3 +76,12 @@ def observe_publication(conn: Any, *, tenant_id: str, publication_id: str, expec
       WHERE tenant_id=%s AND id=%s AND revision=%s RETURNING """+", ".join(_PUBLICATION_COLUMNS),
       (status,submitted_version,observed_version,external_reference,reconciliation_token,observed_at,failure_reason,tenant_id,publication_id,expected_revision)).fetchone()
     return row_as_dict(_PUBLICATION_COLUMNS,row) if row else None
+
+def retry_failed_publication(conn: Any, *, tenant_id: str, publication_id: str, expected_revision: int) -> dict[str, Any] | None:
+    """Only a FAILED channel is reopened; LIVE/PENDING/UNKNOWN channels are never re-dispatched."""
+    row = conn.execute("""UPDATE channel_publication
+       SET status='NOT_STARTED', failure_reason=NULL, reconciliation_token=NULL, revision=revision+1
+       WHERE tenant_id=%s AND id=%s AND revision=%s AND status='FAILED'
+       RETURNING """ + ", ".join(_PUBLICATION_COLUMNS),
+       (tenant_id, publication_id, expected_revision)).fetchone()
+    return row_as_dict(_PUBLICATION_COLUMNS, row) if row else None
