@@ -66,20 +66,21 @@ def assemble_trace(conn: psycopg.Connection, *, tenant_id: str, task_id: str) ->
     return trace
 
 
-def operational_alerts(conn: psycopg.Connection, *, tenant_id: str, now: str) -> dict[str, list[dict[str, Any]]]:
+def operational_alerts(
+    conn: psycopg.Connection, *, tenant_id: str, now: str, stale_before: str
+) -> dict[str, list[dict[str, Any]]]:
     """Return read-only actionable signals; all queries retain the RLS tenant predicate."""
     queries = {
-        "overdue_reconciliation": ("""SELECT id,status,deadline,next_run_at FROM execution_task WHERE tenant_id=%s AND status IN ('UNKNOWN','WAITING') AND (deadline<=%s OR next_run_at<=%s) ORDER BY created_at""", ["task_id", "status", "deadline", "next_run_at"]),
-        "expired_execution_lease": ("""SELECT id,status,lease_until FROM execution_task WHERE tenant_id=%s AND status='EXECUTING' AND lease_until<=%s ORDER BY lease_until""", ["task_id", "status", "lease_until"]),
-        "authorization_blockers": ("""SELECT DISTINCT t.id,t.status,'REVOCATION' FROM execution_task t JOIN work w ON (w.tenant_id=t.tenant_id AND w.id=t.work_id) JOIN execution_authorization a ON (a.tenant_id=w.tenant_id AND a.work_id=w.id) JOIN LATERAL jsonb_array_elements_text(COALESCE(a.approval_refs, '[]'::jsonb)) ar(approval_id) ON TRUE JOIN approval_revocation r ON (r.tenant_id=a.tenant_id AND r.approval_id=ar.approval_id::uuid) WHERE t.tenant_id=%s AND t.status IN ('NEW','VALIDATING','READY') AND r.effective_at<=%s
-                                  UNION ALL SELECT DISTINCT t.id,t.status,'EXPIRED_DECISION' FROM execution_task t JOIN work w ON (w.tenant_id=t.tenant_id AND w.id=t.work_id) JOIN decision_request d ON (d.tenant_id=w.tenant_id AND d.work_id=w.id) WHERE t.tenant_id=%s AND t.status IN ('NEW','VALIDATING','READY') AND (d.status='EXPIRED' OR d.expires_at<=%s)
-                                  UNION ALL SELECT DISTINCT t.id,t.status,'EXPIRED_AUTHORIZATION' FROM execution_task t JOIN work w ON (w.tenant_id=t.tenant_id AND w.id=t.work_id) JOIN execution_authorization a ON (a.tenant_id=w.tenant_id AND a.work_id=w.id) WHERE t.tenant_id=%s AND t.status IN ('NEW','VALIDATING','READY') AND a.expiry<=%s""", ["task_id", "status", "reason"]),
-        "outbox_backlog": ("""SELECT count(*),min(created_at) FROM outbox_event WHERE tenant_id=%s AND published_at IS NULL""", ["count", "oldest_created_at"]),
-        "inbox_exceptions": ("""SELECT id,processing_status,received_at FROM inbox_event WHERE tenant_id=%s AND processing_status IN ('QUARANTINED','DEAD_LETTER') UNION ALL SELECT i.id,'CONFLICT',c.detected_at FROM inbox_event_conflict c JOIN inbox_event i ON (i.tenant_id=c.tenant_id AND i.id=c.inbox_event_id) WHERE c.tenant_id=%s""", ["inbox_event_id", "status", "detected_at"]),
-        "stuck_publications": ("""SELECT id,status,external_reference,updated_at FROM channel_publication WHERE tenant_id=%s AND status IN ('DISPATCHING','PENDING','UNKNOWN') AND updated_at<=%s ORDER BY updated_at""", ["publication_id", "status", "external_reference", "updated_at"]),
+        "overdue_reconciliation": ("""SELECT id,status,deadline,next_run_at FROM execution_task WHERE tenant_id=%s AND status IN ('UNKNOWN','WAITING') AND (deadline<=%s OR next_run_at<=%s) ORDER BY created_at""", (tenant_id, now, now), ["task_id", "status", "deadline", "next_run_at"]),
+        "expired_execution_lease": ("""SELECT id,status,lease_until FROM execution_task WHERE tenant_id=%s AND status='EXECUTING' AND lease_until<=%s ORDER BY lease_until""", (tenant_id, now), ["task_id", "status", "lease_until"]),
+        "authorization_blockers": ("""SELECT DISTINCT t.id,t.status,'REVOCATION' FROM execution_task t JOIN work w ON (w.tenant_id=t.tenant_id AND w.id=t.work_id) JOIN execution_authorization a ON (a.tenant_id=w.tenant_id AND a.work_id=w.id) JOIN LATERAL jsonb_array_elements(COALESCE(a.approval_refs, '[]'::jsonb)) ar(ref) ON TRUE JOIN approval_revocation r ON (r.tenant_id=a.tenant_id AND r.approval_id=(ar.ref->>'id')::uuid AND ar.ref->>'tenant_id'=a.tenant_id::text) WHERE t.tenant_id=%s AND t.status IN ('NEW','VALIDATING','READY') AND r.effective_at<=%s
+                                  UNION ALL SELECT DISTINCT t.id,t.status,'EXPIRED_DECISION' FROM execution_task t JOIN work w ON (w.tenant_id=t.tenant_id AND w.id=t.work_id) JOIN decision_request d ON (d.tenant_id=w.tenant_id AND d.work_id=w.id) WHERE t.tenant_id=%s AND t.status IN ('NEW','VALIDATING','READY') AND (d.status='EXPIRED' OR (d.status='PENDING' AND d.expires_at<=%s))
+                                  UNION ALL SELECT DISTINCT t.id,t.status,'EXPIRED_AUTHORIZATION' FROM execution_task t JOIN work w ON (w.tenant_id=t.tenant_id AND w.id=t.work_id) JOIN execution_authorization a ON (a.tenant_id=w.tenant_id AND a.work_id=w.id) WHERE t.tenant_id=%s AND t.status IN ('NEW','VALIDATING','READY') AND a.expiry<=%s""", (tenant_id, now, tenant_id, now, tenant_id, now), ["task_id", "status", "reason"]),
+        "outbox_backlog": ("""SELECT count(*),min(created_at) FROM outbox_event WHERE tenant_id=%s AND published_at IS NULL""", (tenant_id,), ["count", "oldest_created_at"]),
+        "inbox_exceptions": ("""SELECT id,processing_status,received_at FROM inbox_event WHERE tenant_id=%s AND processing_status IN ('QUARANTINED','DEAD_LETTER') UNION ALL SELECT i.id,'CONFLICT',c.detected_at FROM inbox_event_conflict c JOIN inbox_event i ON (i.tenant_id=c.tenant_id AND i.id=c.inbox_event_id) WHERE c.tenant_id=%s""", (tenant_id, tenant_id), ["inbox_event_id", "status", "detected_at"]),
+        "stuck_publications": ("""SELECT id,status,external_reference,updated_at FROM channel_publication WHERE tenant_id=%s AND status IN ('PENDING','UNKNOWN') AND updated_at<=%s ORDER BY updated_at""", (tenant_id, stale_before), ["publication_id", "status", "external_reference", "updated_at"]),
     }
     result: dict[str, list[dict[str, Any]]] = {}
-    for name, (sql, columns) in queries.items():
-        arguments = (tenant_id, now, now) if name == "overdue_reconciliation" else ((tenant_id, now, tenant_id, now, tenant_id, now) if name == "authorization_blockers" else ((tenant_id, tenant_id) if name == "inbox_exceptions" else (tenant_id, now)))
-        result[name] = _rows(columns, conn.execute(sql, arguments))
+    for name, (sql, parameters, columns) in queries.items():
+        result[name] = _rows(columns, conn.execute(sql, parameters))
     return result

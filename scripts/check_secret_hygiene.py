@@ -30,12 +30,12 @@ def findings(root: Path = ROOT) -> list[str]:
         except UnicodeDecodeError:
             continue
         for label, pattern in (("private key", PRIVATE_KEY), ("high-risk token", HIGH_RISK_TOKEN), ("credential DSN", REAL_DSN)):
-            match = pattern.search(text)
-            # This fixed, repository-documented password only exists in the
-            # disposable hosted PostgreSQL fixture; it is not a credential.
-            example_dsn = label == "credential DSN" and ("..." in match.group(0) or "<" in match.group(0)) if match else False
-            if match and "eng02-ci-only" not in match.group(0) and not example_dsn:
-                problems.append(f"{path.relative_to(root)}: possible {label}")
+            for match in pattern.finditer(text):
+                # This fixed, repository-documented password only exists in the
+                # disposable hosted PostgreSQL fixture; it is not a credential.
+                example_dsn = label == "credential DSN" and ("..." in match.group(0) or "<" in match.group(0))
+                if "eng02-ci-only" not in match.group(0) and not example_dsn:
+                    problems.append(f"{path.relative_to(root)}: possible {label}")
     return problems
 
 
