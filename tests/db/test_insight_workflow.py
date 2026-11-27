@@ -35,8 +35,8 @@ def test_complaint_asset_cannot_be_marketed_even_by_direct_db_write(conn, tenant
         # A failed statement aborts its transaction in PostgreSQL.  Keep the
         # fixture row by isolating this expected constraint rejection in a
         # savepoint, then commit it for the separate admin-role probe below.
-        with conn.transaction():
-            with pytest.raises(psycopg.Error):
+        with pytest.raises(psycopg.Error):
+            with conn.transaction():
                 conn.execute("UPDATE asset SET lifecycle_status='AVAILABLE' WHERE tenant_id=%s AND id=%s", (tenant_a, asset_id))
     with psycopg.connect(admin_database_url, autocommit=True) as admin:
         with pytest.raises(psycopg.Error):
