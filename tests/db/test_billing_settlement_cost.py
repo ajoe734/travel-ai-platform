@@ -212,7 +212,7 @@ def test_cost_finalization_rejects_cross_case_or_kind_and_decimal_replay(conn, t
             )
         with pytest.raises(IdempotencyConflict):
             billing_repository.record_operational_cost(
-                conn, cost_id=str(uuid.uuid4()), case_id=other_case, order_id=None,
+                conn, tenant_id=tenant_a, cost_id=str(uuid.uuid4()), case_id=other_case, order_id=None,
                 business_key="voice:identity:other", request_hash=sha256_hex("voice:identity:other"),
                 cost_kind="VOICE", outcome="FAILED", cost_status="ACTUAL", manual_remediation=False,
                 quantity="1", unit="second", amount_minor_units=1, currency="JPY",
@@ -328,7 +328,8 @@ def test_decimal_cost_replay_and_later_period_human_do_not_change_this_period(co
             conn, cost_id=str(uuid.uuid4()), **{**args, "quantity": Decimal("1.25")}
         )
         billing_repository.record_operational_cost(
-            conn, cost_id=str(uuid.uuid4()), case_id=case_id, order_id=None, business_key="future:human",
+            conn, tenant_id=tenant_a, cost_id=str(uuid.uuid4()), case_id=case_id, order_id=None,
+            business_key="future:human",
             request_hash=sha256_hex("future:human"), cost_kind="HUMAN", outcome="CANCELLED", cost_status="ACTUAL",
             manual_remediation=False, quantity="1", unit="minute", amount_minor_units=1, currency="TWD",
             currency_scale_ref="iso4217-minor-unit-2", provider_usage_ref="future-human",
