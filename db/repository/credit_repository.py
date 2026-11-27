@@ -201,6 +201,14 @@ def reverse_credit_redemption(
     original REDEEM remains in the evidence trail and is offset by a linked
     REDEEM_REVERSAL.
     """
+    # The account->grant lock intentionally does not serialize two redemptions
+    # on different grants.  Serialize this stable operation key first, so a
+    # losing concurrent request rechecks the committed binding rather than
+    # treating a still-uncommitted ``DO NOTHING`` winner as its own success.
+    conn.execute(
+        "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+        (f"{tenant_id}:{reversal_business_key}",),
+    )
     existing = conn.execute(
         """SELECT reversal_of FROM credit_ledger_entry
              WHERE tenant_id = %s AND business_key = %s""",
