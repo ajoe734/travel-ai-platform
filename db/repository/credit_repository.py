@@ -227,7 +227,7 @@ def reverse_credit_redemption(
         # savepoint so the outer tenant transaction remains usable for the
         # replay/conflict lookup below.
         with conn.transaction():
-            conn.execute(
+            inserted = conn.execute(
                 """INSERT INTO credit_ledger_entry
                     (tenant_id, id, account_id, grant_id, entry_type, amount_minor_units, currency,
                      business_key, source_operation, reversal_of, occurred_at)
@@ -235,15 +235,23 @@ def reverse_credit_redemption(
                 ON CONFLICT (tenant_id, reversal_of) DO NOTHING""",
                 (tenant_id, reversal_entry_id, account_id, grant_id, amount, currency, reversal_business_key,
                  json.dumps({"redemption_entry_id": str(redemption_entry_id)}), redemption_entry_id),
-            )
-    except psycopg.errors.UniqueViolation as exc:
+            ).fetchone()
+    except psycopg.errors.UniqueViolation:
+        # The nested transaction has rolled back to its savepoint.  Resolve the
+        # now-visible winner below without poisoning tenant_transaction.
+        inserted = None
+    if inserted is None:
+        # ``DO NOTHING`` can also be reached through the reversal_of arbiter.
+        # Inspect business_key explicitly: it is the stable operation contract,
+        # so the same key must never be silently rebound to another redemption.
         replay = conn.execute(
             "SELECT reversal_of FROM credit_ledger_entry WHERE tenant_id = %s AND business_key = %s",
             (tenant_id, reversal_business_key),
         ).fetchone()
         if replay is not None and str(replay[0]) == str(redemption_entry_id):
             return
-        raise IdempotencyConflict("Credit reversal key is already bound to another redemption") from exc
+        if replay is not None:
+            raise IdempotencyConflict("Credit reversal key is already bound to another redemption")
 
 
 def _existing_grant_operation(
