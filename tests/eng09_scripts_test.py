@@ -84,4 +84,3 @@ class SecretHygieneTest(unittest.TestCase):
             finally:
                 hygiene.tracked_files = original
         self.assertEqual(problems, ["leaked.txt: possible credential DSN"])
-

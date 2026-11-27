@@ -99,26 +99,53 @@ def test_alerts_cover_each_class_and_use_tenant_scoped_ref_json(conn, tenant_a, 
         conn.execute("UPDATE execution_task SET lease_until='2020-01-01T00:00:00Z' WHERE tenant_id=%s AND id=%s", (tenant_a, lease_task))
         approval_repository.create_decision_request(conn, tenant_id=tenant_a, decision_id=decision_id, revision=1, work_id=work_id,
             decision_type="BOOKING_CONFIRMATION", options=[{"id": "accept"}], payload_hash="0" * 64, target_revision=1,
-            expires_at="2030-01-01T00:00:00Z", requested_role="CUSTOMER")
+            # A resolved decision whose original expiry is in the past is not
+            # an authorization blocker.  Only a still-PENDING decision is.
+            expires_at="2020-01-01T00:00:00Z", requested_role="CUSTOMER")
         approval_repository.approve_decision(conn, tenant_id=tenant_a, decision_id=decision_id, reviewed_revision=1, selected_option_id="accept",
             approval_id=approval_id, approved_by={"actor_kind": "CUSTOMER", "actor_id": "merchant"}, verified_actor_ref="test",
             approved_payload={}, payload_hash=canonical_json.payload_hash({}), scope_manifest=[], approved_at="2020-01-01T00:00:00Z")
         conn.execute("""INSERT INTO execution_authorization
-            (tenant_id,id,work_id,root_business_key,capabilities,approval_refs,manifest_hash,issued_at)
-            VALUES (%s,%s,%s,'booking:ops',%s,%s,%s,'2020-01-01T00:00:00Z')""",
+            (tenant_id,id,work_id,root_business_key,capabilities,approval_refs,manifest_hash,expiry,issued_at)
+            VALUES (%s,%s,%s,'booking:ops',%s,%s,%s,'2020-01-01T00:00:00Z','2020-01-01T00:00:00Z')""",
             (tenant_a, authorization_id, work_id, json.dumps(["booking.create"]), json.dumps([{"tenant_id": tenant_a, "id": approval_id}]), "0" * 64))
+        approval_repository.create_decision_request(conn, tenant_id=tenant_a, decision_id=str(uuid.uuid4()), revision=1,
+            work_id=work_id, decision_type="BOOKING_CONFIRMATION", options=[{"id": "accept"}], payload_hash="1" * 64,
+            target_revision=1, expires_at="2020-01-01T00:00:00Z", requested_role="CUSTOMER")
         approval_repository.revoke_approval(conn, tenant_id=tenant_a, revocation_id=str(uuid.uuid4()), approval_id=approval_id,
             revoked_by={"actor_kind": "EMPLOYEE", "actor_id": "merchant"}, reason="withdrawn", effective_at="2020-01-01T00:00:00Z")
+        service_id, version_id = str(uuid.uuid4()), str(uuid.uuid4())
+        publication_repository.create_service_version(conn, tenant_id=tenant_a, version_id=version_id, service_id=service_id,
+            version=1, base_version=None, content={"title": "ops alerts"}, change_diff={},
+            content_hash=canonical_json.payload_hash({"title": "ops alerts"}), approval_id=approval_id,
+            approved_at="2020-01-01T00:00:00Z")
+        dispatching = publication_repository.create_publication(conn, tenant_id=tenant_a, publication_id=str(uuid.uuid4()),
+            service_version_id=version_id, channel="dispatching", connector_account_id="ops", environment="MOCK",
+            business_key="publication:dispatching", desired_version=1)
+        dispatching = publication_repository.claim_publication_dispatch(conn, tenant_id=tenant_a,
+            publication_id=dispatching["id"], expected_revision=dispatching["revision"])
+        pending = publication_repository.create_publication(conn, tenant_id=tenant_a, publication_id=str(uuid.uuid4()),
+            service_version_id=version_id, channel="pending", connector_account_id="ops", environment="MOCK",
+            business_key="publication:pending", desired_version=1)
+        pending = publication_repository.observe_publication(conn, tenant_id=tenant_a, publication_id=pending["id"],
+            expected_revision=pending["revision"], status="PENDING", submitted_version=1,
+            external_reference="pending-external", reconciliation_token="pending-token")
         first = outbox_inbox_repository.record_inbound_event(conn, tenant_id=tenant_a, event_id=str(uuid.uuid4()), connector_account_id=None,
             environment=None, producer="ops-test", source_event_id="event-1", raw_hash=_hash("first"), raw_payload={})
         outbox_inbox_repository.record_inbound_event(conn, tenant_id=tenant_a, event_id=str(uuid.uuid4()), connector_account_id=None,
             environment=None, producer="ops-test", source_event_id="event-1", raw_hash=_hash("second"), raw_payload={})
         assert first.outcome == outbox_inbox_repository.InboxOutcome.CREATED
-        alerts = ops_repository.operational_alerts(conn, tenant_id=tenant_a, now="2026-01-01T00:00:00Z", stale_before="2020-01-01T00:00:00Z")
+        fresh_alerts = ops_repository.operational_alerts(conn, tenant_id=tenant_a, now="2026-01-01T00:00:00Z", stale_before="2020-01-01T00:00:00Z")
+        alerts = ops_repository.operational_alerts(conn, tenant_id=tenant_a, now="2026-01-01T00:00:00Z", stale_before="2099-01-01T00:00:00Z")
     assert lease_task in [row["task_id"] for row in alerts["expired_execution_lease"]]
-    assert {row["reason"] for row in alerts["authorization_blockers"]} == {"REVOCATION"}
+    assert {row["reason"] for row in alerts["authorization_blockers"]} == {
+        "REVOCATION", "EXPIRED_DECISION", "EXPIRED_AUTHORIZATION"
+    }
     assert alerts["inbox_exceptions"]
-    assert not alerts["stuck_publications"], "a fresh/absent publication must not alert at an explicit old staleness cutoff"
+    assert not fresh_alerts["stuck_publications"], "fresh publications must not alert at an explicit old staleness cutoff"
+    assert {(row["publication_id"], row["status"]) for row in alerts["stuck_publications"]} == {
+        (dispatching["id"], "DISPATCHING"), (pending["id"], "PENDING")
+    }
     with repo_db.tenant_transaction(conn, tenant_b):
         isolated = ops_repository.operational_alerts(conn, tenant_id=tenant_b, now="2026-01-01T00:00:00Z", stale_before="2020-01-01T00:00:00Z")
     assert not isolated["overdue_reconciliation"] and not isolated["expired_execution_lease"]
