@@ -1,6 +1,6 @@
 """PostgreSQL acceptance coverage for ENG-08's publication projection.
 
-This suite deliberately uses migration 0006 and production repositories; it
+This suite deliberately uses the ENG-08 0007/0008 migrations and production repositories; it
 does not recreate publication tables in test SQL.
 """
 from __future__ import annotations

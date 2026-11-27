@@ -19,6 +19,6 @@
 修復 anchor：`17c4c1cc9ac9fc2537def20ad3dcef03229fb6e4`；closeout candidate 的完整 SHA 以 handoff machine truth 為準。
 本機已執行：`python3 -m unittest tests.publication_service_test -v`（11 passed）、
 `python3 -m py_compile tests/publication_service_test.py tests/db/test_publication_workflow.py services/publication/service.py db/repository/publication_repository.py`（exit 0）、
-`git diff --check`（exit 0）、`python3 -m unittest discover -s tests -p '*_test.py' -v`（162 passed）及
-`python3 scripts/validate_repository.py`（passed；12 originals、251 local links、4 JavaScript）。未執行：
+`git diff --check`（exit 0）、`python3 -m unittest discover -s tests -p '*_test.py' -v`（168 passed）及
+`python3 scripts/validate_repository.py`（passed；12 originals、253 local links、4 JavaScript）。未執行：
 `tests/db/test_publication_workflow.py`；本 VM 缺 psycopg/PostgreSQL，需 hosted `db-repository-tests` 驗證。
