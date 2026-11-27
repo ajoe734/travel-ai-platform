@@ -117,10 +117,11 @@ def test_credit_reservation_prevents_overuse_and_consumes_only_once(
             conn, tenant_id=tenant_a, redemption_entry_id=redemption_id, reversal_entry_id=str(uuid.uuid4()),
             reversal_business_key="cancel-reversal-1",
         )
-        credit_repository.reverse_credit_redemption(
-            conn, tenant_id=tenant_a, redemption_entry_id=redemption_id, reversal_entry_id=str(uuid.uuid4()),
-            reversal_business_key="cancel-reversal-duplicate",
-        )
+        with pytest.raises(IdempotencyConflict):
+            credit_repository.reverse_credit_redemption(
+                conn, tenant_id=tenant_a, redemption_entry_id=redemption_id, reversal_entry_id=str(uuid.uuid4()),
+                reversal_business_key="cancel-reversal-duplicate",
+            )
         reversal_count = conn.execute(
             "SELECT count(*) FROM credit_ledger_entry WHERE tenant_id = %s AND reversal_of = %s",
             (tenant_a, redemption_id),

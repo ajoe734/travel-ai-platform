@@ -228,27 +228,21 @@ def reverse_credit_redemption(
     account_id, grant_id, amount, currency, _ = original
     # Match every mutable Credit operation's account -> grant lock order.
     _lock_grant_in_account_order(conn, tenant_id=tenant_id, grant_id=str(grant_id))
-    try:
-        # This function is called inside tenant_transaction.  ``reversal_of``
-        # is the targeted conflict arbiter, but a concurrent request can still
-        # violate UNIQUE(tenant_id, business_key).  Contain that error in a
-        # savepoint so the outer tenant transaction remains usable for the
-        # replay/conflict lookup below.
-        with conn.transaction():
-            inserted = conn.execute(
-                """INSERT INTO credit_ledger_entry
-                    (tenant_id, id, account_id, grant_id, entry_type, amount_minor_units, currency,
-                     business_key, source_operation, reversal_of, occurred_at)
-                VALUES (%s, %s, %s, %s, 'REDEEM_REVERSAL', %s, %s, %s, %s, %s, clock_timestamp())
-                ON CONFLICT (tenant_id, reversal_of) DO NOTHING
-                RETURNING reversal_of""",
-                (tenant_id, reversal_entry_id, account_id, grant_id, amount, currency, reversal_business_key,
-                 json.dumps({"redemption_entry_id": str(redemption_entry_id)}), redemption_entry_id),
-            ).fetchone()
-    except psycopg.errors.UniqueViolation:
-        # The nested transaction has rolled back to its savepoint.  Resolve the
-        # now-visible winner below without poisoning tenant_transaction.
-        inserted = None
+    # Do not nominate only ``reversal_of`` as the conflict arbiter.  A distinct
+    # redemption racing on the same business key must be observed as a no-op
+    # here too, rather than raising a transaction-poisoning UniqueViolation.
+    # PostgreSQL waits for the competing writer before deciding DO NOTHING, so
+    # the fresh READ COMMITTED queries below can inspect its committed binding.
+    inserted = conn.execute(
+        """INSERT INTO credit_ledger_entry
+            (tenant_id, id, account_id, grant_id, entry_type, amount_minor_units, currency,
+             business_key, source_operation, reversal_of, occurred_at)
+        VALUES (%s, %s, %s, %s, 'REDEEM_REVERSAL', %s, %s, %s, %s, %s, clock_timestamp())
+        ON CONFLICT DO NOTHING
+        RETURNING reversal_of""",
+        (tenant_id, reversal_entry_id, account_id, grant_id, amount, currency, reversal_business_key,
+         json.dumps({"redemption_entry_id": str(redemption_entry_id)}), redemption_entry_id),
+    ).fetchone()
     if inserted is None:
         # ``DO NOTHING`` can also be reached through the reversal_of arbiter.
         # Inspect business_key explicitly: it is the stable operation contract,
@@ -261,6 +255,14 @@ def reverse_credit_redemption(
             return
         if replay is not None:
             raise IdempotencyConflict("Credit reversal key is already bound to another redemption")
+        reversal = conn.execute(
+            """SELECT business_key FROM credit_ledger_entry
+                 WHERE tenant_id = %s AND reversal_of = %s""",
+            (tenant_id, redemption_entry_id),
+        ).fetchone()
+        if reversal is not None:
+            raise IdempotencyConflict("Credit redemption is already bound to another reversal key")
+        raise RuntimeError("Credit reversal insert did not persist a replayable result")
 
 
 def _existing_grant_operation(
