@@ -378,7 +378,7 @@ def expire_credit_grant(
             """INSERT INTO credit_ledger_entry
                     (tenant_id, id, account_id, grant_id, entry_type, amount_minor_units, currency,
                      business_key, source_operation, occurred_at)
-                VALUES (%s, %s, %s, %s, 'EXPIRE', %s, %s, %s, %s, %s, clock_timestamp())""",
+                VALUES (%s, %s, %s, %s, 'EXPIRE', %s, %s, %s, %s, clock_timestamp())""",
             (tenant_id, ledger_entry_id, account_id, grant_id, available, currency, operation_key,
              json.dumps({"grant_id": str(grant_id)})),
         )

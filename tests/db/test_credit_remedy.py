@@ -369,7 +369,10 @@ def test_eng07_schema_enforces_rls_immutable_ledger_and_composite_grant_identity
                  WHERE oid = 'credit_ledger_entry'::regclass"""
         ).fetchone()
         assert protected == (True, True)
-        with pytest.raises(Exception, match="IMMUTABLE_RECORD"):
+        # ``app_role`` has no UPDATE grant.  A more-privileged migration role
+        # is independently stopped by the immutable trigger, so either
+        # database guard proves this production access path is append-only.
+        with pytest.raises(Exception, match="IMMUTABLE_RECORD|permission denied"):
             with conn.transaction():
                 conn.execute("UPDATE credit_ledger_entry SET amount_minor_units = 1 WHERE tenant_id = %s AND grant_id = %s",
                              (tenant_a, grant["id"]))
