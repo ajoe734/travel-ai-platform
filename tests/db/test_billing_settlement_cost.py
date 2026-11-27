@@ -57,6 +57,7 @@ def test_refund_reversal_is_append_only_and_limited_to_original_settlement(conn,
     chain = payment_chain_factory(tenant_a, case_id, 1000)
     contract_version_id = _contract(conn, tenant_a)
     refund_id = str(uuid.uuid4())
+    refund_id_2 = str(uuid.uuid4())
     with repo_db.tenant_transaction(conn, tenant_a):
         billing_repository.record_order_attribution(
             conn, tenant_id=tenant_a, order_id=chain["order_id"], attribution_kind="CHANNEL_CUSTOMER",
@@ -100,9 +101,18 @@ def test_refund_reversal_is_append_only_and_limited_to_original_settlement(conn,
                 original_entry_id=revenue["id"], business_key="settlement:refund-100:replayed-key",
                 amount_minor_units=10, basis={"refund_ratio": "1/10"}, occurred_at=_NOW,
             )
-        with pytest.raises(RepositoryError):
+        refund_repository.reserve_refund(
+            conn, tenant_id=tenant_a, payment_id=chain["payment_id"], refund_id=refund_id_2,
+            business_key="refund:order-100:second-partial", amount_minor_units=100, currency="TWD",
+            currency_scale_ref="iso4217-minor-unit-2",
+        )
+        refund_repository.mark_refund_succeeded(
+            conn, tenant_id=tenant_a, refund_id=refund_id_2, provider_refund_id="provider-refund-101",
+            source_revision="provider-v1", evidence={"formal_status": "SUCCEEDED"},
+        )
+        with pytest.raises(RepositoryError, match="exceed") as excinfo:
             billing_repository.record_settlement_reversal(
-                conn, tenant_id=tenant_a, reversal_id=str(uuid.uuid4()), refund_id=refund_id,
+                conn, tenant_id=tenant_a, reversal_id=str(uuid.uuid4()), refund_id=refund_id_2,
                 original_entry_id=revenue["id"], business_key="settlement:refund-100:too-much",
                 amount_minor_units=51, basis={}, occurred_at=_NOW,
             )
@@ -113,6 +123,7 @@ def test_refund_reversal_is_append_only_and_limited_to_original_settlement(conn,
     assert reversal["amount_minor_units"] == -50
     assert reversal["id"] == replay["id"]
     assert original_amount == 100
+    assert not isinstance(excinfo.value, IdempotencyConflict)
 
 
 def test_cost_reporting_keeps_unconverted_and_incomplete_usage_and_excludes_manual_success(
@@ -159,8 +170,12 @@ def test_late_final_usage_appends_actual_cost_and_excludes_incomplete_placeholde
         actual = billing_repository.record_operational_cost(
             conn, cost_id=str(uuid.uuid4()), cost_status="ACTUAL", amount_minor_units=12,
             currency="JPY", currency_scale_ref="iso4217-minor-unit-0", provider_usage_ref="voice-final-1", **common)
+        replay = billing_repository.record_operational_cost(
+            conn, cost_id=str(uuid.uuid4()), cost_status="ACTUAL", amount_minor_units=12,
+            currency="JPY", currency_scale_ref="iso4217-minor-unit-0", provider_usage_ref="voice-final-1", **common)
         summary = billing_repository.cost_summary_by_outcome(conn, tenant_id=tenant_a, period_start=_NOW, period_end=_END)
     assert actual["supersedes_cost_id"] == incomplete["id"]
+    assert replay["id"] == actual["id"]
     assert not any(row["cost_status"] == "INCOMPLETE" for row in summary["by_outcome"])
     assert any(row["currency"] == "JPY" and row["amount_minor_units"] == 12 for row in summary["by_outcome"])
 
@@ -189,6 +204,21 @@ def test_cost_finalization_rejects_cross_case_or_kind_and_decimal_replay(conn, t
                 amount_minor_units=12, currency="JPY", currency_scale_ref="iso4217-minor-unit-0",
                 provider_usage_ref="identity-ref", **{k: v for k, v in common.items() if k != "cost_kind"},
             )
+        with pytest.raises(IdempotencyConflict):
+            billing_repository.record_operational_cost(
+                conn, cost_id=str(uuid.uuid4()), case_id=first_case, cost_status="ACTUAL",
+                amount_minor_units=12, currency="JPY", currency_scale_ref="iso4217-minor-unit-0",
+                provider_usage_ref="different-ref", **common,
+            )
+        with pytest.raises(IdempotencyConflict):
+            billing_repository.record_operational_cost(
+                conn, cost_id=str(uuid.uuid4()), case_id=other_case, order_id=None,
+                business_key="voice:identity:other", request_hash=sha256_hex("voice:identity:other"),
+                cost_kind="VOICE", outcome="FAILED", cost_status="ACTUAL", manual_remediation=False,
+                quantity="1", unit="second", amount_minor_units=1, currency="JPY",
+                currency_scale_ref="iso4217-minor-unit-0", provider_usage_ref="identity-ref",
+                occurred_at=_NOW, evidence={},
+            )
 
 
 def test_jpy_partial_refund_commission_reversal_and_cross_currency_rejection(
@@ -212,6 +242,14 @@ def test_jpy_partial_refund_commission_reversal_and_cross_currency_rejection(
                     contract_version_id=contract_version_id, attribution_kind="CHANNEL_CUSTOMER", entry_kind="GMV",
                     business_key="jpy:wrong-contract", amount_minor_units=1000, currency="JPY",
                     currency_scale_ref="iso4217-minor-unit-0", basis={}, occurred_at=_NOW,
+                )
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            with conn.transaction():
+                billing_repository.record_business_fee(
+                    conn, tenant_id=tenant_a, fee_id=str(uuid.uuid4()), contract_version_id=contract_version_id,
+                    business_key="jpy:wrong-fee-contract", request_hash=sha256_hex("jpy:wrong-fee-contract"),
+                    usage_kind="CASE", usage_quantity=1, unit="case", amount_minor_units=1, currency="JPY",
+                    currency_scale_ref="iso4217-minor-unit-0", occurred_at=_NOW, evidence={},
                 )
         commission = billing_repository.record_settlement_entry(
             conn, tenant_id=tenant_a, entry_id=str(uuid.uuid4()), order_id=chain["order_id"],
@@ -286,7 +324,9 @@ def test_decimal_cost_replay_and_later_period_human_do_not_change_this_period(co
                 provider_usage_ref="decimal-replay", occurred_at=_NOW, evidence={})
     with repo_db.tenant_transaction(conn, tenant_a):
         first = billing_repository.record_operational_cost(conn, cost_id=str(uuid.uuid4()), **args)
-        replay = billing_repository.record_operational_cost(conn, cost_id=str(uuid.uuid4()), **args)
+        replay = billing_repository.record_operational_cost(
+            conn, cost_id=str(uuid.uuid4()), **{**args, "quantity": Decimal("1.25")}
+        )
         billing_repository.record_operational_cost(
             conn, cost_id=str(uuid.uuid4()), case_id=case_id, order_id=None, business_key="future:human",
             request_hash=sha256_hex("future:human"), cost_kind="HUMAN", outcome="CANCELLED", cost_status="ACTUAL",
@@ -299,10 +339,40 @@ def test_decimal_cost_replay_and_later_period_human_do_not_change_this_period(co
     assert summary["automatic_success_case_count"] == 1
 
 
+def test_cost_summary_excludes_prior_human_but_keeps_currencies_separate(conn, tenant_a, case_factory):
+    remediated_case = case_factory(tenant_a)
+    automatic_case = case_factory(tenant_a)
+    with repo_db.tenant_transaction(conn, tenant_a):
+        billing_repository.record_operational_cost(
+            conn, tenant_id=tenant_a, cost_id=str(uuid.uuid4()), case_id=remediated_case, order_id=None,
+            business_key="prior:human", request_hash=sha256_hex("prior:human"), cost_kind="HUMAN",
+            outcome="CANCELLED", cost_status="ACTUAL", manual_remediation=False, quantity="1", unit="minute",
+            amount_minor_units=3, currency="TWD", currency_scale_ref="iso4217-minor-unit-2",
+            provider_usage_ref="prior-human", occurred_at="2026-11-26T00:00:00+00:00", evidence={},
+        )
+        for case_id, key, currency, scale, amount in (
+            (remediated_case, "prior:model", "TWD", "iso4217-minor-unit-2", 10),
+            (automatic_case, "automatic:jpy", "JPY", "iso4217-minor-unit-0", 20),
+        ):
+            billing_repository.record_operational_cost(
+                conn, tenant_id=tenant_a, cost_id=str(uuid.uuid4()), case_id=case_id, order_id=None,
+                business_key=key, request_hash=sha256_hex(key), cost_kind="MODEL", outcome="SUCCEEDED",
+                cost_status="ACTUAL", manual_remediation=False, quantity="1", unit="request",
+                amount_minor_units=amount, currency=currency, currency_scale_ref=scale,
+                provider_usage_ref=key, occurred_at=_NOW, evidence={},
+            )
+        summary = billing_repository.cost_summary_by_outcome(conn, tenant_id=tenant_a, period_start=_NOW, period_end=_END)
+    amounts = {(row["outcome"], row["currency"]): row["amount_minor_units"] for row in summary["by_outcome"]}
+    assert summary["automatic_success_case_count"] == 1
+    assert amounts[("SUCCEEDED", "TWD")] == 10
+    assert amounts[("SUCCEEDED", "JPY")] == 20
+
+
 def test_billing_schema_has_rls_and_immutable_records_for_all_eng12_tables(
     conn, admin_database_url, tenant_a, tenant_b, case_factory, payment_chain_factory
 ):
     case_id = case_factory(tenant_a)
+    case_b = case_factory(tenant_b)
     chain = payment_chain_factory(tenant_a, case_id, 100)
     contract_id = _contract(conn, tenant_a)
     with repo_db.tenant_transaction(conn, tenant_a):
@@ -345,7 +415,65 @@ def test_billing_schema_has_rls_and_immutable_records_for_all_eng12_tables(
         ("operational_cost_record", "id", cost["id"], "amount_minor_units = 2"),
     )
     with psycopg.connect(admin_database_url, autocommit=True) as admin_conn:
+        # These writes bypass RLS so this is a migration-level proof that every
+        # child relation carries tenant ownership in its FK, rather than merely
+        # relying on an application-side tenant filter.
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            admin_conn.execute(
+                """INSERT INTO business_fee_charge
+                   (tenant_id,id,contract_version_id,operation,business_key,request_hash,usage_kind,usage_quantity,
+                    unit,amount_minor_units,currency,currency_scale_ref,occurred_at)
+                   VALUES (%s,%s,%s,'ENTERPRISE_USAGE_FEE','cross:fee',%s,'CASE',1,'case',1,'TWD',
+                           'iso4217-minor-unit-2',%s)""",
+                (tenant_b, str(uuid.uuid4()), contract_id, sha256_hex("cross:fee"), _NOW),
+            )
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            admin_conn.execute(
+                """INSERT INTO order_attribution
+                   (tenant_id,order_id,attribution_kind,source_customer_ref,attributed_at)
+                   VALUES (%s,%s,'DIRECT_CUSTOMER','cross',%s)""",
+                (tenant_b, chain["order_id"], _NOW),
+            )
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            admin_conn.execute(
+                """INSERT INTO settlement_entry
+                   (tenant_id,id,order_id,attribution_kind,entry_kind,business_key,amount_minor_units,
+                    currency,currency_scale_ref,basis,occurred_at)
+                   VALUES (%s,%s,%s,'DIRECT_CUSTOMER','GMV','cross:settlement',1,'TWD',
+                           'iso4217-minor-unit-2','{}'::jsonb,%s)""",
+                (tenant_b, str(uuid.uuid4()), chain["order_id"], _NOW),
+            )
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            admin_conn.execute(
+                """INSERT INTO operational_cost_record
+                   (tenant_id,id,case_id,business_key,request_hash,cost_kind,outcome,cost_status,
+                    quantity,unit,amount_minor_units,currency,currency_scale_ref,occurred_at)
+                   VALUES (%s,%s,%s,'cross:case',%s,'MODEL','FAILED','ACTUAL',1,'request',1,'TWD',
+                           'iso4217-minor-unit-2',%s)""",
+                (tenant_b, str(uuid.uuid4()), case_id, sha256_hex("cross:case"), _NOW),
+            )
+        # order_id is intentionally NULL: this must still reject the tenant-A
+        # parent through the four-column self-reference.
+        with pytest.raises(psycopg.errors.ForeignKeyViolation):
+            admin_conn.execute(
+                """INSERT INTO operational_cost_record
+                   (tenant_id,id,case_id,business_key,request_hash,cost_kind,outcome,cost_status,
+                    quantity,unit,amount_minor_units,currency,currency_scale_ref,supersedes_cost_id,occurred_at)
+                   VALUES (%s,%s,%s,'cross:supersedes',%s,'MODEL','SUCCEEDED','ACTUAL',1,'request',1,'TWD',
+                           'iso4217-minor-unit-2',%s,%s)""",
+                (tenant_b, str(uuid.uuid4()), case_b, sha256_hex("cross:supersedes"), cost["id"], _NOW),
+            )
         for table, key, identifier, assignment in updates:
             with pytest.raises(psycopg.Error) as excinfo:
                 admin_conn.execute(f"UPDATE {table} SET {assignment} WHERE tenant_id=%s AND {key}=%s", (tenant_a, identifier))
+            assert isinstance(translate_integrity_error(excinfo.value), ImmutableRecordViolation)
+        for table, key, identifier in (
+            ("billing_contract_version", "id", contract_id),
+            ("business_fee_charge", "id", fee["id"]),
+            ("order_attribution", "order_id", attribution["order_id"]),
+            ("settlement_entry", "id", settlement["id"]),
+            ("operational_cost_record", "id", cost["id"]),
+        ):
+            with pytest.raises(psycopg.Error) as excinfo:
+                admin_conn.execute(f"DELETE FROM {table} WHERE tenant_id=%s AND {key}=%s", (tenant_a, identifier))
             assert isinstance(translate_integrity_error(excinfo.value), ImmutableRecordViolation)

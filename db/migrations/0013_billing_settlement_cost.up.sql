@@ -156,9 +156,15 @@ CREATE TABLE operational_cost_record (
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, business_key),
+    -- This non-null identity remains enforceable when an unconverted case has
+    -- no order_id.  The five-column relation below additionally preserves an
+    -- order match when one exists, but cannot be the only parent guard.
+    UNIQUE (tenant_id, id, case_id, cost_kind),
     UNIQUE (tenant_id, id, case_id, order_id, cost_kind),
     FOREIGN KEY (tenant_id, case_id) REFERENCES case_record(tenant_id, id),
     FOREIGN KEY (tenant_id, order_id) REFERENCES order_record(tenant_id, id),
+    FOREIGN KEY (tenant_id, supersedes_cost_id, case_id, cost_kind)
+        REFERENCES operational_cost_record(tenant_id, id, case_id, cost_kind),
     FOREIGN KEY (tenant_id, supersedes_cost_id, case_id, order_id, cost_kind)
         REFERENCES operational_cost_record(tenant_id, id, case_id, order_id, cost_kind),
     CONSTRAINT operational_cost_amount_shape CHECK (

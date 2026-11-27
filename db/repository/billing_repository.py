@@ -309,7 +309,9 @@ def record_operational_cost(
                     str(case_id), str(order_id) if order_id else None, request_hash, cost_kind,
                     outcome, manual_remediation, Decimal(str(quantity)), unit,
                 )
-                if correction_identity != incoming_identity:
+                if (correction_identity != incoming_identity
+                        or (result["provider_usage_ref"] is not None
+                            and result["provider_usage_ref"] != provider_usage_ref)):
                     raise IdempotencyConflict("final provider usage must retain its incomplete cost identity")
                 final = conn.execute(
                     f"SELECT {', '.join(_COST_COLUMNS)} FROM operational_cost_record "
@@ -362,8 +364,10 @@ def cost_summary_by_outcome(
 ) -> dict[str, Any]:
     """Return one period's cost evidence without treating incomplete usage as zero.
 
-    ``automatic_success_case_count`` excludes every case that has a HUMAN
-    remediation record in the period, even if it later reaches success.
+    ``automatic_success_case_count`` excludes every case that had a HUMAN or
+    manual-remediation record before ``period_end``.  Earlier remediation
+    therefore disqualifies this period, while later evidence cannot rewrite a
+    closed reporting period.
     """
     rows = conn.execute(
         """SELECT outcome, cost_status, currency, SUM(amount_minor_units), COUNT(*)
@@ -387,10 +391,11 @@ def cost_summary_by_outcome(
                 AND NOT EXISTS (SELECT 1 FROM operational_cost_record human
                                 WHERE human.tenant_id=operational_cost_record.tenant_id
                                   AND human.case_id=operational_cost_record.case_id
+                                  AND human.occurred_at < %s
                                   AND (human.manual_remediation OR human.cost_kind='HUMAN'))
               GROUP BY case_id
            ) cases WHERE had_success AND NOT had_manual""",
-        (tenant_id, period_start, period_end),
+        (tenant_id, period_start, period_end, period_end),
     ).fetchone()[0]
     return {
         "period_start": period_start,
