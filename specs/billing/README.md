@@ -1,6 +1,6 @@
 # ENG-12 企業計費、渠道結算與成本回流
 
-實作位於 migration `0009` 與 `db/repository/billing_repository.py`。所有金額均是整數最小
+實作位於 migration `0010` 與 `db/repository/billing_repository.py`。所有金額均是整數最小
 單位，並保存幣別與 scale reference；本模組不從原型、模型輸出或 usage kind 推定費率。
 
 `billing_contract_version` 是不可變合約快照。建立 `business_fee_charge` 時必須同時給出該

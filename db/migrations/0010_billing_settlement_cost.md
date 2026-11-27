@@ -1,6 +1,6 @@
 # ENG-12 計費、結算與成本回流
 
-`0009` 新增可執行的記錄層，而不是預設任何商業費率。`billing_contract_version` 保留
+`0010` 新增可執行的記錄層，而不是預設任何商業費率。`billing_contract_version` 保留
 合約條款 hash、幣別與版本；`business_fee_charge` 以穩定業務鍵與 request hash 使同一
 用量重送不重收，且不同內容不能靜默重用。
 
