@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Formal publication-command boundary tests for ENG-08."""
+from __future__ import annotations
+import unittest
+from connectors.mocks.ota_delayed_publication import OtaDelayedPublicationMock
+from connectors.mocks.pms_nightly import PmsNightlyMock
+from connectors.types import Failed, Pending, Succeeded, SideEffectDisposition
+from services.publication.service import PublicationError, PublicationService, _assert_approval_integrity
+from services.authorization import canonical_json
+
+class _Repo:
+    def __init__(self): self.row={"revision":1,"desired_version":2,"status":"NOT_STARTED"}; self.saved=[]
+
+class ResultSafetyTest(unittest.TestCase):
+    def test_matching_formal_readback_marks_only_that_publication_live(self):
+        """A website readback is recorded against its own publication ID only."""
+        from unittest.mock import patch
+
+        svc = PublicationService()
+        website = {"revision": 1, "desired_version": 2, "status": "NOT_STARTED"}
+        with patch("services.publication.service.publications.get_publication", return_value=website), patch(
+            "services.publication.service.publications.observe_publication",
+            side_effect=lambda _conn, **kw: kw,
+        ) as observe, patch(
+            "services.publication.service.publications.has_newer_live_publication", return_value=False,
+        ):
+            row = svc.record_connector_result(
+                None,
+                tenant_id="t",
+                publication_id="website-publication",
+                expected_revision=1,
+                result=Succeeded(
+                    external_reference="website-listing",
+                    data={},
+                    evidence_refs=("evidence-1",),
+                    observed_at="2026-11-27T00:00:00Z",
+                    source_revision="2",
+                ),
+                now="2026-11-27T00:00:00Z",
+            )
+        self.assertEqual(row["status"], "LIVE")
+        self.assertEqual(row["publication_id"], "website-publication")
+        self.assertEqual(row["observed_version"], 2)
+        observe.assert_called_once()
+
+    def test_source_revision_must_match_before_live(self):
+        # Exercises the real method with only the repository boundary replaced;
+        # the connector result type is the ENG-04 SDK type.
+        from unittest.mock import patch
+        repo=_Repo(); svc=PublicationService()
+        with patch("services.publication.service.publications.get_publication", return_value=repo.row), patch("services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw) as observe:
+            row=svc.record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1,
+                result=Succeeded(external_reference="x", data={}, evidence_refs=("evidence-1",), observed_at="2026-11-27T00:00:00Z", source_revision="1"), now="2026-11-27T00:00:00Z")
+        self.assertEqual(row, repo.row)
+        observe.assert_not_called()
+
+    def test_stale_readback_does_not_brick_new_version_then_matching_readback_lives(self):
+        """Round-2 F3 probe: old v1 evidence cannot terminally fail desired v2."""
+        from unittest.mock import patch
+        current = {"revision": 1, "desired_version": 2, "status": "PENDING", "external_reference": "ota-2"}
+        svc = PublicationService()
+        stale = Succeeded("ota-2", {}, ("old-evidence",), "2026-11-27T00:00:00Z", source_revision="1")
+        fresh = Succeeded("ota-2", {}, ("new-evidence",), "2026-11-27T00:00:01Z", source_revision="2")
+        with patch("services.publication.service.publications.get_publication", return_value=current), patch(
+            "services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw
+        ) as observe, patch("services.publication.service.publications.has_newer_live_publication", return_value=False):
+            self.assertEqual(svc.record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1, result=stale, now="now"), current)
+            saved = svc.record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1, result=fresh, now="now")
+        self.assertEqual(saved["status"], "LIVE")
+        self.assertEqual(observe.call_count, 1)
+
+    def test_rejected_ota_reconcile_maps_failed_without_missing_external_reference(self):
+        """Round-2 F2 probe: Failed intentionally has no external_reference field."""
+        from unittest.mock import patch
+        ota = OtaDelayedPublicationMock()
+        dispatch = ota.submit_publication("tenant-a", "publication:1", "ota", "2", "2026-11-27T00:00:00Z")
+        ota.advance_review("tenant-a", "publication:1", "REJECTED")
+        rejected = ota.reconcile("tenant-a", "publication:1", dispatch.reconciliation_token, "2026-11-27T00:01:00Z")
+        self.assertIsInstance(rejected, Failed)
+        current = {"revision": 2, "desired_version": 2, "status": "PENDING", "external_reference": dispatch.external_reference}
+        with patch("services.publication.service.publications.get_publication", return_value=current), patch(
+            "services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw
+        ):
+            saved = PublicationService().record_connector_result(None, tenant_id="tenant-a", publication_id="p", expected_revision=2, result=rejected, now="now")
+        self.assertEqual(saved["status"], "FAILED")
+        self.assertIn("rejected", saved["failure_reason"])
+
+    def test_unknown_preserves_optional_external_reference(self):
+        from unittest.mock import patch
+        from connectors.types import Unknown
+        current = {"revision": 1, "desired_version": 2, "status": "PENDING", "external_reference": "ota-2"}
+        unknown = Unknown("recon", "NETWORK", "evidence", "now", external_reference="ota-2")
+        with patch("services.publication.service.publications.get_publication", return_value=current), patch(
+            "services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw
+        ):
+            saved = PublicationService().record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1, result=unknown, now="now")
+        self.assertEqual(saved["status"], "UNKNOWN")
+        self.assertEqual(saved["external_reference"], "ota-2")
+
+    def test_known_pending_is_not_unknown(self):
+        from unittest.mock import patch
+        svc=PublicationService(); row={"revision":1,"desired_version":2,"status":"NOT_STARTED"}
+        with patch("services.publication.service.publications.get_publication", return_value=row), patch("services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw):
+            stored=svc.record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=1,
+                result=Pending(external_reference="x", reconciliation_token="r", pending_reason="REVIEW", evidence_refs=("evidence-1",), observed_at="2026-11-27T00:00:00Z"), now="2026-11-27T00:00:00Z")
+        self.assertEqual(stored["status"], "PENDING")
+
+    def test_late_pending_cannot_regress_failed_publication(self):
+        from unittest.mock import patch
+        current = {"revision": 4, "desired_version": 2, "status": "FAILED"}
+        pending = Pending("ota-2", "recon", "RETRY", ("evidence",), "now")
+        with patch("services.publication.service.publications.get_publication", return_value=current), patch(
+            "services.publication.service.publications.observe_publication"
+        ) as observe:
+            saved = PublicationService().record_connector_result(None, tenant_id="t", publication_id="p", expected_revision=4,
+                                                                 result=pending, now="now")
+        self.assertEqual(saved, current)
+        observe.assert_not_called()
+
+    def test_late_old_version_readback_cannot_overwrite_newer_live_target(self):
+        from unittest.mock import patch
+        current = {"revision": 4, "desired_version": 1, "status": "PENDING", "external_reference": "ota-1"}
+        result = Succeeded("ota-1", {}, ("evidence",), "now", source_revision="1")
+        with patch("services.publication.service.publications.get_publication", return_value=current), patch(
+            "services.publication.service.publications.has_newer_live_publication", return_value=True
+        ), patch("services.publication.service.publications.observe_publication") as observe:
+            saved = PublicationService().record_connector_result(None, tenant_id="t", publication_id="v1", expected_revision=4,
+                                                                 result=result, now="now")
+        self.assertEqual(saved, current)
+        observe.assert_not_called()
+
+
+class ApprovalIntegrityRegressionTest(unittest.TestCase):
+    def _approval(self, *, content, scope, base_version_marker=object()):
+        payload = {"service_id": "service", "version": 2, "content": content}
+        if base_version_marker is not _UNSET:
+            payload["base_version"] = base_version_marker
+        return {
+            "canonicalization_version": canonical_json.CANONICALIZATION_VERSION,
+            "approved_payload": payload,
+            "payload_hash": canonical_json.payload_hash(payload),
+            "scope_manifest": [scope],
+        }
+
+    def _assert_with(self, approval, content, *, base_version=None):
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        repository = SimpleNamespace(
+            get_approval_record=lambda _conn, **_kwargs: approval,
+            approval_is_effective=lambda _conn, **_kwargs: True,
+        )
+        # The service intentionally imports this persistence boundary lazily
+        # so its pure result tests do not require psycopg.
+        with patch.dict(sys.modules, {"db.repository.approval_repository": repository}):
+            _assert_approval_integrity(None, tenant_id="tenant", approval_id="approval", now="2026-11-27T00:00:00Z",
+                                       service_id="service", version=2, content=content,
+                                       base_version=base_version, channel="ota", account="account")
+
+    def test_expired_scope_item_is_rejected(self):
+        approval = self._approval(content={"price": 1}, scope={
+            "operation": "publication.update", "resource_ref": {"tenant_id": "tenant", "id": "service"},
+            "resource_revision": 2, "channel": "ota", "account": "account", "expires_at": "2020-01-01T00:00:00Z",
+        }, base_version_marker=_UNSET)
+        with self.assertRaisesRegex(PublicationError, "APPROVAL_SCOPE_MISMATCH"):
+            self._assert_with(approval, {"price": 1})
+
+    def test_bool_is_not_accepted_for_approved_integer_content(self):
+        approval = self._approval(content={"price": 1}, scope={
+            "operation": "publication.update", "resource_ref": {"tenant_id": "tenant", "id": "service"},
+            "resource_revision": 2, "channel": "ota", "account": "account",
+        }, base_version_marker=_UNSET)
+        with self.assertRaisesRegex(PublicationError, "APPROVAL_CONTENT_MISMATCH"):
+            self._assert_with(approval, {"price": True})
+
+    def test_approved_base_version_must_match_command(self):
+        approval = self._approval(content={"price": "1000"}, scope={
+            "operation": "publication.update", "resource_ref": {"tenant_id": "tenant", "id": "service"},
+            "resource_revision": 2, "channel": "ota", "account": "account",
+        }, base_version_marker=1)
+        with self.assertRaisesRegex(PublicationError, "APPROVAL_CONTENT_MISMATCH"):
+            self._assert_with(approval, {"price": "1000"}, base_version=0)
+
+    def test_boolean_is_not_accepted_for_approved_integer_base_version(self):
+        approval = self._approval(content={"price": "1000"}, scope={
+            "operation": "publication.update", "resource_ref": {"tenant_id": "tenant", "id": "service"},
+            "resource_revision": 2, "channel": "ota", "account": "account",
+        }, base_version_marker=1)
+        with self.assertRaisesRegex(PublicationError, "APPROVAL_CONTENT_MISMATCH"):
+            self._assert_with(approval, {"price": "1000"}, base_version=True)
+
+
+_UNSET = object()
+
+
+class PublicationPreparationTest(unittest.TestCase):
+    def test_disabled_channel_is_blocked_without_a_dispatch_intent(self):
+        """Missing/disabled access is actionable locally, not a connector call."""
+        from unittest.mock import patch
+
+        next_id = iter(("website-publication", "ota-publication"))
+
+        def create(_conn, **kwargs):
+            return {"id": kwargs["publication_id"], "revision": 1, "status": "NOT_STARTED"}
+
+        def access(_conn, **kwargs):
+            if kwargs["channel"] == "website":
+                return {"publication_enabled": True, "reason": None}
+            return {"publication_enabled": False, "reason": "CHANNEL_AUTHORIZATION_EXPIRED"}
+
+        def observe(_conn, **kwargs):
+            return kwargs
+
+        svc = PublicationService()
+        with patch(
+            "services.publication.service.uuid.uuid4", side_effect=next_id
+        ), patch(
+            "services.publication.service.publications.create_publication", side_effect=create
+        ), patch(
+            "services.publication.service.publications.get_channel_access", side_effect=access
+        ), patch(
+            "services.publication.service.publications.observe_publication", side_effect=observe
+        ), patch("services.publication.service._assert_approval_integrity"), patch(
+            "services.publication.service.publications.get_service_version",
+            return_value={"approval_id": "approval", "service_id": "service", "version": 2,
+                          "base_version": None, "content": {"title": "v2"}},
+        ):
+            intents, blocked = svc.prepare_publications(
+                None,
+                tenant_id="t",
+                service_version_id="version-1",
+                service_version=2,
+                targets=[
+                    {"channel": "website", "connector_account_id": "web", "environment": "MOCK"},
+                    {"channel": "ota", "connector_account_id": "ota-a", "environment": "MOCK"},
+                ],
+                now="2026-11-27T00:00:00Z",
+            )
+        self.assertEqual([intent.channel for intent in intents], ["website"])
+        self.assertEqual(intents[0].publication_id, "website-publication")
+        self.assertEqual(blocked[0]["status"], "BLOCKED")
+        self.assertEqual(blocked[0]["failure_reason"], "CHANNEL_AUTHORIZATION_EXPIRED")
+
+    def test_unsupported_pms_is_blocked_before_dispatch(self):
+        from unittest.mock import patch
+        pms = PmsNightlyMock({})
+        publication = {"id": "pms-publication", "revision": 1, "status": "NOT_STARTED"}
+        with patch("services.publication.service.uuid.uuid4", return_value="pms-publication"), patch(
+            "services.publication.service.publications.create_publication", return_value=publication
+        ), patch("services.publication.service.publications.get_channel_access", return_value={"publication_enabled": True, "reason": None}), patch(
+            "services.publication.service.publications.observe_publication", side_effect=lambda _conn, **kw: kw
+        ), patch("services.publication.service._assert_approval_integrity"), patch(
+            "services.publication.service.publications.get_service_version",
+            return_value={"approval_id": "approval", "service_id": "service", "version": 2,
+                          "base_version": None, "content": {"title": "v2"}},
+        ):
+            intents, blocked = PublicationService().prepare_publications(None, tenant_id="t", service_version_id="v", service_version=2,
+                targets=[{"channel": "pms", "connector_account_id": "pms", "environment": "MOCK"}],
+                now="2026-11-27T00:00:00Z",
+                connectors={("pms", "pms", "MOCK"): pms})
+        self.assertEqual(intents, [])
+        self.assertEqual(blocked[0]["status"], "BLOCKED")
+        self.assertEqual(pms.publication_call_count, 0)
+
+    def test_retry_uses_the_same_claim_gate_and_refuses_non_failed_rows(self):
+        from unittest.mock import patch
+        svc = PublicationService()
+        with patch("services.publication.service.publications.retry_failed_publication", return_value=None):
+            with self.assertRaisesRegex(Exception, "PUBLICATION_RETRY_NOT_ALLOWED"):
+                svc.retry_failed_publication(None, tenant_id="t", publication_id="live", expected_revision=3,
+                                             connector=OtaDelayedPublicationMock(), now="now")
+        reopened = {"id": "failed", "channel": "ota", "connector_account_id": "ota-a", "environment": "MOCK",
+                    "business_key": "publication:failed", "desired_version": 2, "revision": 5}
+        claimed = object()
+        with patch("services.publication.service.publications.retry_failed_publication", return_value=reopened), patch.object(
+            svc, "claim_dispatch", return_value=claimed
+        ) as claim:
+            self.assertIs(svc.retry_failed_publication(None, tenant_id="t", publication_id="failed", expected_revision=4,
+                                                        connector=OtaDelayedPublicationMock(), now="now"), claimed)
+        self.assertEqual(claim.call_args.kwargs["intent"].business_key, "publication:failed")
+
+if __name__ == "__main__": unittest.main()

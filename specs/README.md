@@ -36,6 +36,13 @@ mock 預訂 → 核對 → 完成證據流程。可用 `pytest tests/db/test_ful
 見 [db/README.md 本機無法執行的部分](../db/README.md#本機無法執行的部分)）驗證；驗收逐項對照見
 [fulfillment/acceptance-trace.md](fulfillment/acceptance-trace.md)。
 
+ENG-08 的實際產出在 [publication/](publication/README.md)：不可變 ServiceVersion 與每渠道獨立的
+publication projection、渠道使用權限、已知審核中與未知結果分流，以及必須與正式讀回版本一致才標記 LIVE。
+程式本體在 [`services/publication/`](../services/publication/) 與
+[`db/repository/publication_repository.py`](../db/repository/publication_repository.py)；可用
+`python3 -m unittest tests.publication_service_test -v` 驗證，逐項證據與 PostgreSQL/外部渠道限制見
+[publication/acceptance-trace.md](publication/acceptance-trace.md)。
+
 ENG-10 的實際產出在 [voice/](voice/README.md)：以 tenant-scoped Postgres 記錄 WebRTC、**SIP_TEST**、
 語音回合、改口中斷、驗證後接續、轉接實際結果、非同步音訊收件與安全付款連結交接。它不包含或宣稱
 已連通真實電信帳號；驗收與限制見 [voice/acceptance-trace.md](voice/acceptance-trace.md)。

@@ -62,7 +62,9 @@ jobs:
           echo "::group::upgrade from empty database"
           python3 db/migrate.py upgrade
           python3 db/migrate.py status
-          assert_applied_count 6
+          # Keep this count aligned with the complete checked-in migration set.
+          # ENG-10 owns 0006; ENG-08 follows with 0007 and 0008.
+          assert_applied_count 8
           echo "::endgroup::"
 
           echo "::group::full rollback"
@@ -74,7 +76,7 @@ jobs:
           echo "::group::rebuild"
           python3 db/migrate.py upgrade
           python3 db/migrate.py status
-          assert_applied_count 6
+          assert_applied_count 8
           echo "::endgroup::"
 
   db-repository-tests:

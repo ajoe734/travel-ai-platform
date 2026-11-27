@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-import psycopg
+if TYPE_CHECKING:
+    import psycopg
 
 from .errors import VersionConflict
 from .rows import row_as_dict
