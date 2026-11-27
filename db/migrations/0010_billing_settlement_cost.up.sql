@@ -156,15 +156,20 @@ CREATE TABLE operational_cost_record (
     created_at timestamptz NOT NULL DEFAULT now(),
     PRIMARY KEY (tenant_id, id),
     UNIQUE (tenant_id, business_key),
+    UNIQUE (tenant_id, id, case_id, order_id, cost_kind),
     FOREIGN KEY (tenant_id, case_id) REFERENCES case_record(tenant_id, id),
     FOREIGN KEY (tenant_id, order_id) REFERENCES order_record(tenant_id, id),
-    FOREIGN KEY (tenant_id, supersedes_cost_id) REFERENCES operational_cost_record(tenant_id, id),
+    FOREIGN KEY (tenant_id, supersedes_cost_id, case_id, order_id, cost_kind)
+        REFERENCES operational_cost_record(tenant_id, id, case_id, order_id, cost_kind),
     CONSTRAINT operational_cost_amount_shape CHECK (
         (amount_minor_units IS NULL AND currency IS NULL AND currency_scale_ref IS NULL)
         OR (amount_minor_units IS NOT NULL AND amount_minor_units >= 0 AND currency IS NOT NULL AND currency_scale_ref IS NOT NULL)
     ),
     CONSTRAINT operational_cost_incomplete_amount_shape CHECK (
         (cost_status = 'INCOMPLETE') = (amount_minor_units IS NULL)
+    ),
+    CONSTRAINT operational_cost_finalization_shape CHECK (
+        supersedes_cost_id IS NULL OR (cost_status = 'ACTUAL' AND supersedes_cost_id <> id)
     )
 );
 CREATE TRIGGER operational_cost_record_immutable BEFORE UPDATE OR DELETE ON operational_cost_record
@@ -178,7 +183,7 @@ GRANT SELECT, INSERT ON operational_cost_record TO app_role;
 
 CREATE UNIQUE INDEX operational_cost_provider_usage_dedupe
     ON operational_cost_record (tenant_id, provider_usage_ref)
-    WHERE provider_usage_ref IS NOT NULL;
+    WHERE provider_usage_ref IS NOT NULL AND cost_status <> 'INCOMPLETE';
 CREATE UNIQUE INDEX operational_cost_one_finalization_per_incomplete
     ON operational_cost_record (tenant_id, supersedes_cost_id)
     WHERE supersedes_cost_id IS NOT NULL;

@@ -220,6 +220,21 @@ def record_settlement_reversal(
     source = _row(_SETTLEMENT_COLUMNS, original)
     if str(source["order_id"]) != str(refund[0]) or source["currency"] != refund[1] or source["amount_minor_units"] <= 0:
         raise RepositoryError("refund and original settlement entry do not form a valid reversal pair")
+    # The refund provider can redeliver the same formal refund under a new
+    # business key.  The database's tuple uniqueness is the final concurrency
+    # guard, but inspect it first so the public repository contract never
+    # leaks a raw UniqueViolation.
+    prior_refund_reversal = conn.execute(
+        f"SELECT {', '.join(_SETTLEMENT_COLUMNS)} FROM settlement_entry "
+        "WHERE tenant_id=%s AND reversal_of=%s AND refund_id=%s",
+        (tenant_id, original_entry_id, refund_id),
+    ).fetchone()
+    if prior_refund_reversal is not None:
+        result = _row(_SETTLEMENT_COLUMNS, prior_refund_reversal)
+        if (result["business_key"] != business_key or result["amount_minor_units"] != -amount_minor_units
+                or result["basis"] != basis):
+            raise IdempotencyConflict("refund reversal is already bound to different settlement content")
+        return result
     reversed_so_far = conn.execute(
         "SELECT COALESCE(-SUM(amount_minor_units), 0) FROM settlement_entry "
         "WHERE tenant_id=%s AND reversal_of=%s", (tenant_id, original_entry_id),
@@ -231,12 +246,25 @@ def record_settlement_reversal(
             (tenant_id,id,order_id,refund_id,contract_version_id,attribution_kind,entry_kind,business_key,
              amount_minor_units,currency,currency_scale_ref,basis,reversal_of,occurred_at)
             VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT DO NOTHING
             RETURNING {', '.join(_SETTLEMENT_COLUMNS)}""",
         (tenant_id, reversal_id, source["order_id"], refund_id, source["contract_version_id"],
          source["attribution_kind"], source["entry_kind"], business_key, -amount_minor_units,
          source["currency"], source["currency_scale_ref"], json.dumps(basis), original_entry_id, occurred_at),
     ).fetchone()
-    return _row(_SETTLEMENT_COLUMNS, row)
+    if row is not None:
+        return _row(_SETTLEMENT_COLUMNS, row)
+    raced = conn.execute(
+        f"SELECT {', '.join(_SETTLEMENT_COLUMNS)} FROM settlement_entry "
+        "WHERE tenant_id=%s AND reversal_of=%s AND refund_id=%s",
+        (tenant_id, original_entry_id, refund_id),
+    ).fetchone()
+    if raced is not None:
+        result = _row(_SETTLEMENT_COLUMNS, raced)
+        if (result["business_key"] == business_key and result["amount_minor_units"] == -amount_minor_units
+                and result["basis"] == basis):
+            return result
+    raise IdempotencyConflict("refund reversal is already bound to different settlement content")
 
 
 def record_operational_cost(
@@ -246,7 +274,13 @@ def record_operational_cost(
     currency: str | None, currency_scale_ref: str | None, provider_usage_ref: str | None,
     occurred_at: str, evidence: dict[str, Any],
 ) -> dict[str, Any]:
-    _lock_keys(conn, f"{tenant_id}:cost:{business_key}", *(() if provider_usage_ref is None else (f"{tenant_id}:provider-usage:{provider_usage_ref}",)))
+    final_key = f"{business_key}:final"
+    _lock_keys(
+        conn,
+        f"{tenant_id}:cost:{business_key}",
+        f"{tenant_id}:cost:{final_key}",
+        *(() if provider_usage_ref is None else (f"{tenant_id}:provider-usage:{provider_usage_ref}",)),
+    )
     if order_id is not None:
         belongs = conn.execute(
             "SELECT 1 FROM order_record WHERE tenant_id=%s AND id=%s AND case_id=%s",
@@ -266,7 +300,17 @@ def record_operational_cost(
             # Provider final usage corrects an immutable INCOMPLETE evidence row
             # by appending one linked ACTUAL row; it never rewrites or re-bills it.
             if result["cost_status"] == "INCOMPLETE" and cost_status == "ACTUAL":
-                final_key = f"{business_key}:final"
+                correction_identity = (
+                    str(result["case_id"]), str(result["order_id"]) if result["order_id"] else None,
+                    result["request_hash"], result["cost_kind"], result["outcome"],
+                    result["manual_remediation"], Decimal(str(result["quantity"])), result["unit"],
+                )
+                incoming_identity = (
+                    str(case_id), str(order_id) if order_id else None, request_hash, cost_kind,
+                    outcome, manual_remediation, Decimal(str(quantity)), unit,
+                )
+                if correction_identity != incoming_identity:
+                    raise IdempotencyConflict("final provider usage must retain its incomplete cost identity")
                 final = conn.execute(
                     f"SELECT {', '.join(_COST_COLUMNS)} FROM operational_cost_record "
                     "WHERE tenant_id=%s AND business_key=%s", (tenant_id, final_key),
@@ -337,6 +381,9 @@ def cost_summary_by_outcome(
                      bool_or(outcome = 'SUCCEEDED') AS had_success
               FROM operational_cost_record
               WHERE tenant_id=%s AND occurred_at >= %s AND occurred_at < %s
+                AND NOT EXISTS (SELECT 1 FROM operational_cost_record final
+                                WHERE final.tenant_id=operational_cost_record.tenant_id
+                                  AND final.supersedes_cost_id=operational_cost_record.id)
                 AND NOT EXISTS (SELECT 1 FROM operational_cost_record human
                                 WHERE human.tenant_id=operational_cost_record.tenant_id
                                   AND human.case_id=operational_cost_record.case_id
