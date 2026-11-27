@@ -11,6 +11,7 @@ import json
 import threading
 import uuid
 
+import psycopg
 import pytest
 
 from db.repository import credit_repository, db as repo_db, refund_repository, remedy_repository
