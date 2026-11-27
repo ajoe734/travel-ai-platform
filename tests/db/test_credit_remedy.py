@@ -14,7 +14,7 @@ import uuid
 import pytest
 
 from db.repository import credit_repository, db as repo_db, refund_repository, remedy_repository
-from db.repository.errors import CreditTermsRequired, IdempotencyConflict, InsufficientCreditBalance, InsufficientRefundBalance, RefundRouteMismatch
+from db.repository.errors import CreditTermsRequired, IdempotencyConflict, ImmutableRecordViolation, InsufficientCreditBalance, InsufficientRefundBalance, RefundRouteMismatch, translate_integrity_error
 
 
 def _account(conn, tenant_id: str, *, currency: str = "TWD") -> str:
@@ -272,6 +272,17 @@ def test_revoke_reports_redeemed_disposition_and_rejects_held_usage(conn, tenant
         full = credit_repository.revoke_unused_credit(conn, tenant_id=tenant_a, grant_id=full_grant["id"],
             ledger_entry_id=str(uuid.uuid4()), operation_key="revoke-full")
     assert full["revoked_minor_units"] == 100 and full["already_redeemed_minor_units"] == 0
+    fully_used = _grant(conn, tenant_a, account_id, key="revoke-fully-used")
+    with repo_db.tenant_transaction(conn, tenant_a):
+        usage = credit_repository.reserve_credit_usage(conn, tenant_id=tenant_a, reservation_id=str(uuid.uuid4()), account_id=account_id,
+            grant_id=fully_used["id"], order_id=order_id, operation_key="revoke-fully-used-redeem", amount_minor_units=100, currency="TWD")
+        credit_repository.consume_credit_usage(conn, tenant_id=tenant_a, reservation_id=usage["id"], ledger_entry_id=str(uuid.uuid4()))
+        exhausted = credit_repository.revoke_unused_credit(conn, tenant_id=tenant_a, grant_id=fully_used["id"], ledger_entry_id=str(uuid.uuid4()), operation_key="fully-used-terminal")
+    assert exhausted["disposition"] == "ALREADY_FULLY_REDEEMED" and exhausted["state"] == "REVOKED"
+    other = _grant(conn, tenant_a, account_id, key="revoke-other")
+    with repo_db.tenant_transaction(conn, tenant_a):
+        with pytest.raises(IdempotencyConflict):
+            credit_repository.revoke_unused_credit(conn, tenant_id=tenant_a, grant_id=other["id"], ledger_entry_id=str(uuid.uuid4()), operation_key="fully-used-terminal")
     held_grant = _grant(conn, tenant_a, account_id, key="revoke-held")
     with repo_db.tenant_transaction(conn, tenant_a):
         credit_repository.reserve_credit_usage(conn, tenant_id=tenant_a, reservation_id=str(uuid.uuid4()), account_id=account_id,
@@ -286,7 +297,7 @@ def test_expiry_is_idempotent_and_held_redemption_blocks_expiry(conn, tenant_a, 
     with repo_db.tenant_transaction(conn, tenant_a):
         result = credit_repository.expire_credit_grant(conn, tenant_id=tenant_a, grant_id=expired["id"], ledger_entry_id=str(uuid.uuid4()), operation_key="expire-normal")
         replay = credit_repository.expire_credit_grant(conn, tenant_id=tenant_a, grant_id=expired["id"], ledger_entry_id=str(uuid.uuid4()), operation_key="expire-normal")
-    assert result["expired_minor_units"] == 100 and replay["replayed"] is True
+    assert result["expired_minor_units"] == 100 and replay["expired_minor_units"] == 100 and replay["replayed"] is True
     held_grant = _grant(conn, tenant_a, account_id, key="expire-held", expires_at="2001-01-01T00:00:00Z")
     order_id = payment_chain_factory(tenant_a, case_factory(tenant_a), 100)["order_id"]
     with repo_db.tenant_transaction(conn, tenant_a):
@@ -360,7 +371,7 @@ def test_unknown_refund_holds_balance_and_terminal_state_is_not_a_route_mismatch
                 collector_account="mock-collector", connector_account_id=str(uuid.uuid4()), environment="MOCK")
 
 
-def test_eng07_schema_enforces_rls_immutable_ledger_and_composite_grant_identity(conn, tenant_a):
+def test_eng07_schema_enforces_rls_immutable_ledger_and_composite_grant_identity(conn, admin_database_url, tenant_a, tenant_b):
     account_id = _account(conn, tenant_a)
     grant = _grant(conn, tenant_a, account_id, key="schema-guard")
     with repo_db.tenant_transaction(conn, tenant_a):
@@ -369,13 +380,19 @@ def test_eng07_schema_enforces_rls_immutable_ledger_and_composite_grant_identity
                  WHERE oid = 'credit_ledger_entry'::regclass"""
         ).fetchone()
         assert protected == (True, True)
-        # ``app_role`` has no UPDATE grant.  A more-privileged migration role
-        # is independently stopped by the immutable trigger, so either
-        # database guard proves this production access path is append-only.
-        with pytest.raises(Exception, match="IMMUTABLE_RECORD|permission denied"):
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
             with conn.transaction():
                 conn.execute("UPDATE credit_ledger_entry SET amount_minor_units = 1 WHERE tenant_id = %s AND grant_id = %s",
                              (tenant_a, grant["id"]))
+    with psycopg.connect(admin_database_url, autocommit=True) as admin_conn:
+        with pytest.raises(psycopg.Error) as excinfo:
+            admin_conn.execute("DELETE FROM credit_ledger_entry WHERE tenant_id = %s AND grant_id = %s", (tenant_a, grant["id"]))
+        assert isinstance(translate_integrity_error(excinfo.value), ImmutableRecordViolation)
+    with repo_db.tenant_transaction(conn, tenant_b):
+        assert conn.execute("SELECT id FROM credit_ledger_entry WHERE tenant_id = %s", (tenant_a,)).fetchone() is None
+        with pytest.raises(psycopg.errors.InsufficientPrivilege):
+            conn.execute("INSERT INTO credit_account (tenant_id, id, issuer, beneficiary_ref, currency) VALUES (%s, %s, 'x', '{}'::jsonb, 'TWD')", (tenant_a, str(uuid.uuid4())))
+    with repo_db.tenant_transaction(conn, tenant_a):
         # The FK includes account/currency; changing either cannot attach a
         # ledger row to a grant merely because its UUID belongs to this tenant.
         with pytest.raises(Exception):

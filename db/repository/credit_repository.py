@@ -118,17 +118,17 @@ def reserve_credit_usage(
     ).fetchone()
     if account is None or grant is None or amount_minor_units <= 0:
         raise InsufficientCreditBalance("Credit account/grant is not usable for this redemption")
-    ledger_balance = conn.execute(
-        """SELECT COALESCE(SUM(CASE WHEN entry_type IN ('ISSUE', 'REDEEM_REVERSAL')
-                                     THEN amount_minor_units ELSE -amount_minor_units END), 0)
-             FROM credit_ledger_entry WHERE tenant_id = %s AND grant_id = %s""",
-        (tenant_id, grant_id),
-    ).fetchone()[0]
-    held = conn.execute(
-        """SELECT COALESCE(SUM(amount_minor_units), 0) FROM credit_usage_reservation
-             WHERE tenant_id = %s AND grant_id = %s AND state = 'HELD'""",
-        (tenant_id, grant_id),
-    ).fetchone()[0]
+    # One statement gives ledger and HELD reads one MVCC snapshot.  The
+    # account->grant lock also serializes consume/release with this check.
+    ledger_balance, held = conn.execute(
+        """SELECT
+                COALESCE((SELECT SUM(CASE WHEN entry_type IN ('ISSUE', 'REDEEM_REVERSAL')
+                    THEN amount_minor_units ELSE -amount_minor_units END)
+                    FROM credit_ledger_entry WHERE tenant_id = %s AND grant_id = %s), 0),
+                COALESCE((SELECT SUM(amount_minor_units) FROM credit_usage_reservation
+                    WHERE tenant_id = %s AND grant_id = %s AND state = 'HELD'), 0)""",
+        (tenant_id, grant_id, tenant_id, grant_id),
+    ).fetchone()
     if ledger_balance - held < amount_minor_units:
         raise InsufficientCreditBalance("Credit grant has insufficient available balance")
     row = conn.execute(
@@ -146,6 +146,13 @@ def consume_credit_usage(
     conn: psycopg.Connection, *, tenant_id: str, reservation_id: str, ledger_entry_id: str,
 ) -> None:
     """Commit a HELD usage exactly once after a verified redemption result."""
+    identity = conn.execute(
+        "SELECT grant_id FROM credit_usage_reservation WHERE tenant_id = %s AND id = %s",
+        (tenant_id, reservation_id),
+    ).fetchone()
+    if identity is None:
+        return
+    _lock_grant_in_account_order(conn, tenant_id=tenant_id, grant_id=str(identity[0]))
     row = conn.execute(
         """UPDATE credit_usage_reservation SET state = 'CONSUMED'
              WHERE tenant_id = %s AND id = %s AND state = 'HELD'
@@ -167,6 +174,13 @@ def consume_credit_usage(
 
 def release_credit_usage(conn: psycopg.Connection, *, tenant_id: str, reservation_id: str) -> None:
     """Release only a proven-no-effect HELD redemption; UNKNOWN must stay HELD."""
+    identity = conn.execute(
+        "SELECT grant_id FROM credit_usage_reservation WHERE tenant_id = %s AND id = %s",
+        (tenant_id, reservation_id),
+    ).fetchone()
+    if identity is None:
+        return
+    _lock_grant_in_account_order(conn, tenant_id=tenant_id, grant_id=str(identity[0]))
     conn.execute(
         """UPDATE credit_usage_reservation SET state = 'RELEASED'
              WHERE tenant_id = %s AND id = %s AND state = 'HELD'""",
@@ -206,15 +220,24 @@ def reverse_credit_redemption(
     account_id, grant_id, amount, currency, _ = original
     # Match every mutable Credit operation's account -> grant lock order.
     _lock_grant_in_account_order(conn, tenant_id=tenant_id, grant_id=str(grant_id))
-    conn.execute(
-        """INSERT INTO credit_ledger_entry
+    try:
+        conn.execute(
+            """INSERT INTO credit_ledger_entry
                 (tenant_id, id, account_id, grant_id, entry_type, amount_minor_units, currency,
                  business_key, source_operation, reversal_of, occurred_at)
             VALUES (%s, %s, %s, %s, 'REDEEM_REVERSAL', %s, %s, %s, %s, %s, clock_timestamp())
             ON CONFLICT (tenant_id, reversal_of) DO NOTHING""",
-        (tenant_id, reversal_entry_id, account_id, grant_id, amount, currency, reversal_business_key,
-         json.dumps({"redemption_entry_id": str(redemption_entry_id)}), redemption_entry_id),
-    )
+            (tenant_id, reversal_entry_id, account_id, grant_id, amount, currency, reversal_business_key,
+             json.dumps({"redemption_entry_id": str(redemption_entry_id)}), redemption_entry_id),
+        )
+    except psycopg.errors.UniqueViolation as exc:
+        replay = conn.execute(
+            "SELECT reversal_of FROM credit_ledger_entry WHERE tenant_id = %s AND business_key = %s",
+            (tenant_id, reversal_business_key),
+        ).fetchone()
+        if replay is not None and str(replay[0]) == str(redemption_entry_id):
+            return
+        raise IdempotencyConflict("Credit reversal key is already bound to another redemption") from exc
 
 
 def _existing_grant_operation(
@@ -226,16 +249,17 @@ def _existing_grant_operation(
              WHERE tenant_id = %s AND business_key = %s""",
         (tenant_id, operation_key),
     ).fetchone()
+    amount_key = "revoked_minor_units" if entry_type == "REVOKE" else "expired_minor_units"
     if row is None:
         terminal = conn.execute(
-            """SELECT state, terminal_operation_key FROM credit_grant
-                 WHERE tenant_id = %s AND id = %s""",
-            (tenant_id, grant_id),
+            """SELECT id, state, terminal_operation_key FROM credit_grant
+                 WHERE tenant_id = %s AND terminal_operation_key = %s""",
+            (tenant_id, operation_key),
         ).fetchone()
         expected_state = "REVOKED" if entry_type == "REVOKE" else "EXPIRED"
-        if terminal is not None and terminal[1] is not None:
-            if terminal[0] == expected_state and terminal[1] == operation_key:
-                return {"grant_id": str(grant_id), "revoked_minor_units": 0, "replayed": True}
+        if terminal is not None:
+            if str(terminal[0]) == str(grant_id) and terminal[1] == expected_state:
+                return {"grant_id": str(grant_id), amount_key: 0, "replayed": True}
             raise IdempotencyConflict("Credit terminal operation key is already bound to another operation")
         return None
     if str(row[0]) != str(grant_id):
@@ -246,7 +270,7 @@ def _existing_grant_operation(
     ).fetchone()[0]
     if recorded_type != entry_type:
         raise IdempotencyConflict("Credit operation key is already bound to another operation type")
-    return {"grant_id": str(row[0]), "revoked_minor_units": row[1], "replayed": True}
+    return {"grant_id": str(row[0]), amount_key: row[1], "replayed": True}
 
 
 def _lock_grant_in_account_order(
@@ -309,8 +333,11 @@ def revoke_unused_credit(
     account_id, currency, state, _ = grant
     if state != "ACTIVE":
         if state == "REVOKED" and grant[3] == operation_key:
+            replay = _existing_grant_operation(
+                conn, tenant_id=tenant_id, grant_id=grant_id, operation_key=operation_key, entry_type="REVOKE"
+            )
             _, redeemed = _credit_balance_breakdown(conn, tenant_id=tenant_id, grant_id=grant_id)
-            return {"grant_id": str(grant_id), "revoked_minor_units": 0,
+            return {**(replay or {"grant_id": str(grant_id), "revoked_minor_units": 0}), "state": state,
                     "already_redeemed_minor_units": redeemed, "disposition": "REPLAYED", "replayed": True}
         raise ValueError("Credit grant is not active and cannot be revoked")
     held = conn.execute(
@@ -331,9 +358,10 @@ def revoke_unused_credit(
             (tenant_id, ledger_entry_id, account_id, grant_id, available, currency, operation_key,
              json.dumps({"grant_id": str(grant_id)})),
         )
-    return {"grant_id": str(grant_id), "revoked_minor_units": available,
+    return {"grant_id": str(grant_id), "state": "REVOKED", "revoked_minor_units": available,
             "already_redeemed_minor_units": redeemed,
-            "disposition": "REVOKED_UNUSED_BALANCE" if redeemed else "REVOKED_FULL_UNUSED_BALANCE",
+            "disposition": ("REVOKED_UNUSED_BALANCE" if available else "ALREADY_FULLY_REDEEMED")
+            if redeemed else "REVOKED_FULL_UNUSED_BALANCE",
             "replayed": False}
 
 
@@ -353,8 +381,11 @@ def expire_credit_grant(
     account_id, currency, state, _ = grant
     if state != "ACTIVE":
         if state == "EXPIRED" and grant[3] == operation_key:
+            replay = _existing_grant_operation(
+                conn, tenant_id=tenant_id, grant_id=grant_id, operation_key=operation_key, entry_type="EXPIRE"
+            )
             _, redeemed = _credit_balance_breakdown(conn, tenant_id=tenant_id, grant_id=grant_id)
-            return {"grant_id": str(grant_id), "expired_minor_units": 0,
+            return {**(replay or {"grant_id": str(grant_id), "expired_minor_units": 0}), "state": state,
                     "already_redeemed_minor_units": redeemed, "disposition": "REPLAYED", "replayed": True}
         raise ValueError("Credit grant is not active and cannot expire")
     expired = conn.execute(
@@ -382,5 +413,5 @@ def expire_credit_grant(
             (tenant_id, ledger_entry_id, account_id, grant_id, available, currency, operation_key,
              json.dumps({"grant_id": str(grant_id)})),
         )
-    return {"grant_id": str(grant_id), "expired_minor_units": available,
+    return {"grant_id": str(grant_id), "state": "EXPIRED", "expired_minor_units": available,
             "already_redeemed_minor_units": redeemed, "disposition": "EXPIRED", "replayed": False}

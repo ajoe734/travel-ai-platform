@@ -121,6 +121,9 @@ CREATE TABLE credit_grant (
 CREATE UNIQUE INDEX credit_grant_provider_dedupe
     ON credit_grant (tenant_id, provider_grant_id)
     WHERE provider_grant_id IS NOT NULL;
+CREATE UNIQUE INDEX credit_grant_terminal_operation_dedupe
+    ON credit_grant (tenant_id, terminal_operation_key)
+    WHERE terminal_operation_key IS NOT NULL;
 CREATE TRIGGER credit_grant_set_updated_at BEFORE UPDATE ON credit_grant
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 ALTER TABLE credit_grant ENABLE ROW LEVEL SECURITY;
